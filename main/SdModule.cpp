@@ -1,38 +1,35 @@
 #include "SdModule.h"
 
+SdModule::SdModule(uint8_t csPin) : _csPin(csPin), _filename("/data.json") {}
 
-SdModule::SdModule(uint8_t csPin) : _csPin(csPin), _filename("/data.csv") {}
-
-bool SdModule::writeHeader(const String& headerLine) {
-    if (!SD.exists(_filename)) {
-        File file = SD.open(_filename, FILE_WRITE);
-        if (file) {
-            file.println(headerLine);
-            file.close();
-            return true;
-        } else {
-            Serial.println("[SD] Nie udało się utworzyć pliku nagłówka!");
-        }
+bool SdModule::begin() {
+    if (!SD.begin(_csPin)) {
+        Serial.println("[SD] Initialization failed!");
+        return false;
     }
-    return false;
+    Serial.println("[SD] SD ready.");
+    return true;
 }
 
-bool SdModule::writeData(const String& csvLine) {
-    Serial.print("[SD] Próbuję otworzyć plik: ");
-    Serial.println(_filename);
-    File file = SD.open(_filename, FILE_WRITE);
-    if (file) {
-        Serial.println("[SD] Plik otwarty poprawnie, zapisuję dane...");
-        file.println(csvLine);
-        file.close();
-        return true;
-    } else {
-        Serial.println("[SD] Nie udało się otworzyć pliku do zapisu!");
-        if (SD.exists(_filename)) {
-            Serial.println("[SD] Plik istnieje, ale nie można go otworzyć do zapisu.");
-        } else {
-            Serial.println("[SD] Plik nie istnieje i nie można go utworzyć.");
-        }
+bool SdModule::writeJson(double lat, double lon, double elev, double speed, double temp) {
+    File file = SD.open(_filename, FILE_APPEND);
+    if (!file) {
+        Serial.println("[SD] Error opening file!");
+        return false;
     }
-    return false;
+
+    StaticJsonDocument<200> doc;
+    doc["lat"] = lat;
+    doc["lon"] = lon;
+    doc["elevation"] = elev;
+    doc["speed"] = speed;
+    doc["temp"] = temp;
+
+    String jsonLine;
+    serializeJson(doc, jsonLine);
+    file.println(jsonLine);
+    file.close();
+
+    Serial.println("[SD] Saved: " + jsonLine);
+    return true;
 }

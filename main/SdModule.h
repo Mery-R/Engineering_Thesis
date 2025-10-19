@@ -3,16 +3,17 @@
 
 #include <SD.h>
 #include <SPI.h>
-
+#include <ArduinoJson.h>
 
 class SdModule {
 public:
     SdModule(uint8_t csPin);
-    bool writeData(const String& csvLine);
-    bool writeHeader(const String& headerLine);
+    bool begin();
+    bool writeJson(double lat, double lon, double elev, double speed, double temp);
+
 private:
     uint8_t _csPin;
     String _filename;
 };
 
-#endif // SD_MODULE_H
+#endif
