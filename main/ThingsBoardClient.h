@@ -1,19 +1,32 @@
-#ifndef THINGSBOARD_CLIENT_H
-#define THINGSBOARD_CLIENT_H
+#pragma once
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Arduino.h>
+#include "SdModule.h"
 
-#include <WiFiClient.h>
-#include <HTTPClient.h>
-#include <ArduinoJson.h>
-
+// ThingsBoard client (MQTT)
 class ThingsBoardClient {
 public:
-    ThingsBoardClient(const char* server, int port, const char* token);
-    bool sendTelemetry(double lat, double lon, double elevation, double speed, double temp);
+    ThingsBoardClient(const char* server, int port,
+                      const char* clientId,
+                      const char* username,
+                      const char* password);
+
+    bool connect();
+    bool isConnected();
+    void loop();
+
+    // Pobiera batch danych z SD i wysyła je hurtowo na ThingsBoard
+    // Po udanej wysyłce wywołuje SdModule::markBatchAsSent()
+    int sendBatchToTB(SdModule &sdModule, int maxItems);
 
 private:
     const char* _server;
     int _port;
-    const char* _token;
-};
+    const char* _clientId;
+    const char* _username;
+    const char* _password;
 
-#endif
+    WiFiClient _wifiClient;
+    PubSubClient _mqttClient;
+};

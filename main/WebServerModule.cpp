@@ -1,6 +1,7 @@
 #include "WebServerModule.h"
+#include <ArduinoJson.h>
 
-WebServer server;
+WebServer server(80);
 
 void handleRoot() {
     String html = R"rawliteral(
@@ -37,12 +38,16 @@ void handleRoot() {
                     var lines = data.split('\n');
                     var coords = [];
                     lines.forEach(line => {
-                        if(line && !line.startsWith("lat")){
-                            var parts = line.split(',');
-                            var lat = parseFloat(parts[0].trim());
-                            var lon = parseFloat(parts[1].trim());
-                            if(!isNaN(lat) && !isNaN(lon)){
-                                coords.push([lat, lon]);
+                        if(line && line.trim().length > 0){
+                            try {
+                                var obj = JSON.parse(line);
+                                var lat = parseFloat(obj.lat);
+                                var lon = parseFloat(obj.lon);
+                                if(!isNaN(lat) && !isNaN(lon)){
+                                    coords.push([lat, lon]);
+                                }
+                            } catch(e) {
+                                // Ignore parse errors
                             }
                         }
                     });
@@ -88,23 +93,32 @@ void handleRoot() {
 }
 
 void handleGPSData() {
-    if (!SD.exists("/data.csv")) {
+    // Support both /data_log.txt (JSON lines) and /data.csv (legacy)
+    const char* primaryFile = "/data_log.txt";
+    const char* fallbackFile = "/data.csv";
+    
+    const char* targetFile = primaryFile;
+    if (!SD.exists(primaryFile) && SD.exists(fallbackFile)) {
+        targetFile = fallbackFile;
+    }
+    
+    if (!SD.exists(targetFile)) {
         server.send(404, "text/plain", "Brak danych GPS");
         return;
     }
 
-    File file = SD.open("/data.csv");
+    File file = SD.open(targetFile);
     if(!file){
         server.send(500, "text/plain", "Nie można otworzyć pliku");
         return;
     }
 
-    String csv = "";
+    String data = "";
     while (file.available()) {
-        csv += (char)file.read();
+        data += (char)file.read();
     }
     file.close();
-    server.send(200, "text/csv", csv);
+    server.send(200, "text/plain", data);
 }
 
 void startWebServer(uint16_t port) {
