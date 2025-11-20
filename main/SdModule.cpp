@@ -81,7 +81,7 @@ bool SdModule::appendRecords(JsonArray &records) {
     serializeJson(doc, f);
     f.close();
 
-    Serial.printf("[SD] Added %d records\n", records.size());
+    Serial.printf("[SD] Saved %d records\n", records.size());
     return true;
 }
 

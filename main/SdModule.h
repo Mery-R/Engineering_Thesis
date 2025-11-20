@@ -2,7 +2,7 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <SD.h>
-#include "TimeConfig.h"      // jeśli używasz funkcji getTimestamp(), isTimeSynced()
+#include "TimeManager.h"      // jeśli używasz funkcji getTimestamp(), isTimeSynced()
 #include "GpsModule.h"       // nadal potrzebne do interfejsu GPS
 #include <ArduinoJson.h>
 

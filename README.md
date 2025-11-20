@@ -1,135 +1,217 @@
-# GPS Tracker IoT – Praca Inżynierska
+# Engineering Thesis - GPS Data Collection System
 
-## Opis projektu
-Projekt inżynierski polega na zaprojektowaniu i implementacji urządzenia typu **GPS Tracker** opartego na mikrokontrolerze **ESP32**, które umożliwia:
-- zbieranie danych lokalizacyjnych z modułu GPS,
-- wysyłanie ich do chmury (ThingSpeak) w czasie rzeczywistym,
-- monitorowanie lokalizacji poprzez panel online,
-- zasilanie z akumulatora litowo-jonowego z układem ładowania.
+## Project Overview
 
-Celem projektu jest stworzenie niedrogiej, otwartej i łatwo rozszerzalnej platformy IoT do monitorowania położenia obiektów (np. pojazdów, rowerów, sprzętu).
+This is an ESP32-based data acquisition system that collects GPS coordinates, temperature data, and transmits them to ThingsBoard IoT platform via MQTT over Wi-Fi. The system also provides local data logging to SD card for offline operation and a web server for real-time map visualization.
 
----
+## System Architecture
 
-## Wykorzystane technologie
+### Main Components
 
-### Sprzęt
-- ESP32-DevKitC-32D – główny mikrokontroler z Wi-Fi i Bluetooth
-- Moduł GPS (NEO-6M lub kompatybilny) – odbiornik sygnału GNSS
-- Akumulator Li-Ion NCR18650B 3400 mAh – zasilanie mobilne
-- TP4056 USB-C – układ ładowania akumulatora
-- BMS PCM 3,7V 8A – zabezpieczenie akumulatora
-- Moduł karty microSD – zapis danych offline
-- Czujnik temperatury DS18B20 (opcjonalny) – monitoring środowiskowy
+1. **main.ino** - Main entry point with FreeRTOS task management
+2. **GpsModule.cpp/h** - GPS receiver communication (UART, TinyGPSPlus)
+3. **ThingsBoardClient.cpp/h** - MQTT telemetry transmission
+4. **SdModule.cpp/h** - SD card data logging
+5. **WebServerModule.cpp/h** - Web server with Leaflet map visualization
+6. **DS18B20 Temperature Sensor** - 1-Wire protocol sensor reading
 
-### Oprogramowanie
-- Arduino IDE lub PlatformIO – środowisko programistyczne
-- C++ (Arduino Core for ESP32) – główny język implementacji
-- ThingSpeak API – chmura do wizualizacji danych
-- TinyGPS++ – parser ramek NMEA z modułu GPS
-- Biblioteki ESP32 – obsługa Wi-Fi, HTTP, I2C, UART
+### FreeRTOS Tasks
 
----
+The system runs 4 concurrent tasks:
 
-## Architektura systemu
+1. **TaskGPS** (Priority 1)
+   - Reads GPS data every 10 seconds (Delay_GPS = 10000ms)
+   - Maintains GPS fix status
+   - Updates global sensor data structure with semaphore protection
+   - Falls back to last known position if no fix available
 
-1. Odbiór danych GPS – moduł NEO-6M przesyła dane w formacie NMEA do ESP32.
-2. Przetwarzanie danych – ESP32 parsuje dane i wyodrębnia:
-   - współrzędne (lat, lon),
-   - prędkość,
-   - wysokość,
-   - dokładność,
-   - czas UTC.
-3. Wysyłanie danych do chmury – ESP32 łączy się z Wi-Fi i publikuje dane na ThingSpeak poprzez API.
-4. Zapis offline – równolegle dane mogą być logowane na kartę SD.
-5. Prezentacja danych – użytkownik śledzi lokalizację przez dashboard ThingSpeak.
+2. **TaskTemp** (Priority 1)
+   - Reads DS18B20 temperature sensor every 5 seconds (Delay_Temp = 5000ms)
+   - Validates temperature readings (-55°C to 125°C)
+   - Handles sensor disconnection gracefully
 
----
+3. **TaskSD** (Priority 1)
+   - Logs sensor data to SD card every 10 seconds (Delay_SD = 10000ms)
+   - Only writes to SD when Wi-Fi/ThingsBoard are unavailable
+   - Reduces SD wear during normal operation
 
-## Funkcjonalności
-- Odczyt pozycji GPS w czasie rzeczywistym
-- Automatyczne wysyłanie danych do chmury (ThingSpeak)
-- Backup danych na kartę SD
-- Zasilanie akumulatorowe z możliwością ładowania przez USB-C
-- Ochrona akumulatora dzięki układowi BMS
-- Modułowa budowa – możliwość podłączenia dodatkowych czujników IoT
-- Obsługa komunikacji Wi-Fi oraz potencjalna rozbudowa o LoRa lub GSM
+4. **TaskServer** (Priority 1)
+   - Manages web server on port 80
+   - Handles ThingsBoard MQTT transmission every 15 seconds (Delay_TB = 15000ms)
+   - Processes SD card backlog first (up to 20 records per batch)
+   - Then sends RAM ring buffer contents
+   - Re-appends failed records to SD for later retry
 
----
+### Data Flow
 
-## Schemat połączeń (hardware)
+```
+GPS + Temp Sensors
+    ↓
+TaskGPS & TaskTemp → Global SensorData (protected by semaphore)
+    ↓
+Ring Buffer (last 10 readings in RAM)
+    ↓
+TaskServer
+    ├→ SD Card (for offline storage)
+    └→ ThingsBoard (via MQTT)
+```
 
-- ESP32 ↔ GPS (NEO-6M) – UART
-- ESP32 ↔ microSD – SPI
-- ESP32 ↔ DS18B20 – OneWire
-- ESP32 ↔ TP4056 / BMS – zasilanie bateryjne
-- ESP32 ↔ Wi-Fi – komunikacja z chmurą
+### Data Storage
 
----
+#### SD Card Format
+- **File**: `/data_log.txt`
+- **Format**: JSON Lines (one JSON object per line)
+- **Structure**:
+  ```json
+  {
+    "lat": 52.123456,
+    "lon": 21.654321,
+    "elevation": 125.50,
+    "speed": 45.30,
+    "temp": 22.50,
+    "current_time": 1637000000,
+    "time_source": 1,
+    "last_gps_fix_timestamp": 1637000000,
+    "last_temp_read_timestamp": 1637000000,
+    "error_code": 0
+  }
+  ```
 
-## Instrukcja uruchomienia
+#### ThingsBoard MQTT Topic
+- **Topic**: `v1/devices/me/telemetry`
+- **Payload**: JSON with lat, lon, elevation, speed, temp, ts (timestamp)
 
-1. Sklonuj repozytorium:
-   ```bash
-   git clone https://github.com/<twoj-nick>/gps-tracker.git
-   cd gps-tracker
-2. Otwórz projekt w Arduino IDE lub PlatformIO.
+### Error Handling
 
-3. Zainstaluj wymagane biblioteki:
+The system uses a bitfield-based error code:
 
-    * TinyGPS++
+```cpp
+#define ERR_GPS_NO_FIX   (1 << 0)  // Bit 0: GPS fix unavailable
+#define ERR_TEMP_FAIL    (1 << 1)  // Bit 1: Temperature sensor failure
+#define ERR_SD_FAIL      (1 << 2)  // Bit 2: SD card write failure
+#define ERR_TB_FAIL      (1 << 3)  // Bit 3: ThingsBoard transmission failure
+```
 
-    * WiFi.h
+### Time Sources
 
-    * HTTPClient.h
+The system supports three time sources (in priority order):
 
-    * SD.h
+1. **TIME_GPS** - GPS-derived time (most accurate, requires GPS fix)
+2. **TIME_WIFI** - NTP via Wi-Fi (when connected and synced)
+3. **TIME_LOCAL** - System millis() fallback (least accurate)
 
-4. Skonfiguruj plik config.h:
-    ```bash
-    #define WIFI_SSID "TwojaSiec"
-    #define WIFI_PASS "TwojeHaslo"
-    #define API_KEY   "THING_SPEAK_WRITE_API_KEY"  
-5. Wgraj kod na ESP32.
+## Hardware Configuration
 
-6. Uruchom urządzenie i obserwuj dane na panelu ThingSpeak.
+### GPIO Pinout (ESP32)
 
-## Wizualizacja danych
+| Function | GPIO | Notes |
+|----------|------|-------|
+| GPS RX | GPIO16 | Serial1 input |
+| GPS TX | GPIO17 | Serial1 output |
+| SD CS | GPIO5 | Chip select for SD SPI |
+| SPI MOSI | GPIO23 | Serial Peripheral Interface |
+| SPI MISO | GPIO19 | Serial Peripheral Interface |
+| SPI SCK | GPIO18 | Serial Peripheral Interface |
+| DS18B20 | GPIO4 | OneWire temperature sensor |
 
-Na panelu ThingSpeak można monitorować w czasie rzeczywistym:
+### WiFi Configuration
 
-* aktualną lokalizację na mapie,
+- **SSID**: KTO-Rosomak
+- **Password**: 12345678 (change in production!)
 
-* historię trasy,
+### ThingsBoard Configuration
 
-* prędkość i wysokość,
+- **Server**: demo.thingsboard.io
+- **Port**: 1883 (MQTT)
+- **Client ID**: esp32_test
+- **Username**: user123
+- **Password**: haslo123 (change in production!)
 
-* dodatkowe czujniki (np. temperaturę).
+## Web Interface
 
-## Możliwości rozwoju
+The web server provides a live map at `http://<ESP32_IP>/`
 
-* Implementacja komunikacji LoRa dla obszarów bez Wi-Fi
+Features:
+- Real-time GPS trace visualization with Leaflet.js
+- Configurable number of points (1-100)
+- Color coding:
+  - Red: Latest position
+  - Green: Recent positions (last 10)
+  - Blue: Older positions
+- Reset view button to auto-fit map bounds
 
-* Wysyłanie danych SMS-em poprzez moduł GSM (SIM800L)
+API Endpoint: `/gpsdata`
+- Returns JSON Lines format compatible with the storage format
 
-* Integracja z Google Maps API w aplikacji mobilnej
+## Dependencies
 
-* Tryb uśpienia ESP32 dla wydłużenia czasu pracy baterii
+### Arduino Libraries (required in `libraries.h` or IDE)
 
-* Dodanie czujników IMU (akcelerometr, żyroskop) dla analizy ruchu
+- **WiFi** - ESP32 built-in
+- **WebServer** - ESP32 built-in
+- **SD** - ESP32 built-in
+- **SPI** - ESP32 built-in
+- **OneWire** - For DS18B20 temperature sensor
+- **DallasTemperature** - DS18B20 driver
+- **TinyGPSPlus** - GPS NMEA parser
+- **PubSubClient** - MQTT client
+- **ArduinoJson** - JSON serialization
 
-* Wersja miniaturowa z obudową wydrukowaną w 3D
+## Ring Buffer Design
 
-## Dokumentacja i źródła
+A 10-entry ring buffer in RAM provides:
+- Fast access to recent data
+- Efficient memory usage
+- FIFO ordering for transmission to ThingsBoard
 
-* ESP32 Arduino Core
+Oldest entries are popped first and transmitted to ThingsBoard, then removed from the buffer.
 
-* ThingSpeak API
+## Synchronization
 
-*  TinyGPS++
+All access to the global `SensorData` structure is protected by a mutex semaphore (`dataSem`) to prevent race conditions between sensor reading tasks and the transmission task.
 
-## Autor
+Ring buffer operations are also protected by their own semaphore (`ringSem`).
 
-#### Miłosz Stec – 2025
+## Compilation Notes
 
-Projekt zrealizowany w ramach pracy inżynierskiej
+- **Platform**: ESP32 (Arduino IDE or PlatformIO)
+- **Board**: ESP32 Dev Module or compatible
+- **Flash Size**: 4MB minimum recommended
+- **Baud Rate**: 115200 for Serial (debugging)
+
+## Future Improvements
+
+1. Web interface for configuration changes
+2. Battery monitoring and low-power mode
+3. SD card cleanup based on file size limits
+4. Multiple GPS fix averaging
+5. Data encryption for MQTT transmission
+
+## Troubleshooting
+
+### GPS No Fix
+- Check antenna connection
+- Ensure GPS module is powered correctly
+- Wait for initial acquisition (5 minutes timeout)
+- Check serial communication on pins 16/17
+
+### SD Card Issues
+- Verify CS pin (GPIO5) connection
+- Check SPI pin configuration (18/19/23)
+- Format card as FAT32
+- Ensure sufficient free space
+
+### ThingsBoard Connection Fails
+- Verify Wi-Fi credentials
+- Check MQTT broker availability
+- Confirm credentials on broker
+- Check network firewall rules
+
+### High Temperature Readings
+- Verify DS18B20 connection to GPIO4
+- Check OneWire pull-up resistor (4.7kΩ recommended)
+- Ensure sensor hasn't been disconnected
+
+## License
+
+This project is part of an engineering thesis. Modify and use as needed for educational purposes.

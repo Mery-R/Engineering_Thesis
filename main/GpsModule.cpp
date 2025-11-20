@@ -143,3 +143,9 @@ uint64_t gpsGetUnixMillis() {
     // NMEA provides second precision; milliseconds set to zero
     return ms;
 }
+
+// Return true if GPS currently provides valid date and time
+bool gpsTimeAvailable() {
+    return gps.date.isValid() && gps.time.isValid();
+}
+

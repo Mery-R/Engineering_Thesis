@@ -1,6 +1,7 @@
 #pragma once
 #include <TinyGPSPlus.h>
 #include <HardwareSerial.h>
+#include "TimeManager.h"
 
 /**
  * GPS Module Interface
@@ -35,3 +36,8 @@ void getGpsData(double &lat, double &lon, double &elevation, double &speed);
 // Returns GPS-derived Unix timestamp in milliseconds (UTC). If GPS date/time
 // is not valid this returns 0.
 uint64_t gpsGetUnixMillis();
+
+// Returns true if GPS provides a valid date/time right now
+bool gpsTimeAvailable();
+
+
