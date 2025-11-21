@@ -9,6 +9,7 @@ template<typename T>
 class RingBuffer {
 public:
   RingBuffer(int capacity = 10);
+  ~RingBuffer();
   bool push(const T &d);         
   int popBatch(T out[], int maxItems); 
   int size();

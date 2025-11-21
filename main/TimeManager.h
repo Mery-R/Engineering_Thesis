@@ -41,6 +41,8 @@ private:
     static uint32_t lastPeriodicCheck;
 
     static uint64_t getNtpTimeMs();
+    // Minimal valid unix ms timestamp (to reject garbage GPS times)
+    static const uint64_t MIN_VALID_UNIX_MS;
 };
 
 #endif // TIME_MANAGER_H

@@ -1,5 +1,6 @@
 #include "ThingsBoardClient.h"
 #include <ArduinoJson.h>
+#include <time.h>
 
 ThingsBoardClient::ThingsBoardClient(const char* server, int port,
                                      const char* clientId,
@@ -55,51 +56,54 @@ int ThingsBoardClient::sendBatchToTB(SdModule &sdModule, int maxItems) {
     int count = sdModule.readBatch(batch, maxItems, false);
     if (count == 0) return 0;
 
-    // Tworzymy JSON w formacie ThingsBoard: {ts: ..., values: {...}}
-    StaticJsonDocument<16384> tbDoc;
-    JsonArray tbBatch = tbDoc.to<JsonArray>();
-
+    // Ensure each item has expected structure: { "ts": <ms>, "values": { ... } }
     for (int i = 0; i < count; ++i) {
-        JsonObject item = tbBatch.createNestedObject();
-        item["ts"] = batch[i]["timestamp"];  // timestamp z SensorData
-        JsonObject values = item.createNestedObject("values");
+        if (!batch[i].containsKey("ts")) {
+            uint64_t ts_ms = 0ULL;
+            if (batch[i].containsKey("timestamp")) {
+                uint64_t raw = (uint64_t) batch[i]["timestamp"];
+                if (raw >= 1000000000000ULL) ts_ms = raw;
+                else if (raw >= 1000000000ULL) ts_ms = raw * 1000ULL;
+            }
+            if (ts_ms == 0ULL) {
+                time_t now_s = time(NULL);
+                if (now_s > 0) ts_ms = (uint64_t)now_s * 1000ULL + (uint64_t)(millis() % 1000);
+                else ts_ms = (uint64_t) millis();
+            }
+            batch[i]["ts"] = ts_ms;
+        }
 
-        values["lat"] = batch[i]["lat"];
-        values["lon"] = batch[i]["lon"];
-        values["elevation"] = batch[i]["elevation"];
-        values["speed"] = batch[i]["speed"];
-        values["temp"] = batch[i]["temp"];
-        values["timestamp_time_source"] = batch[i]["timestamp_time_source"];
-        values["last_gps_fix_timestamp"] = batch[i]["last_gps_fix_timestamp"];
-        values["last_temp_read_timestamp"] = batch[i]["last_temp_read_timestamp"];
-        values["error_code"] = batch[i]["error_code"];
-        values["tb_sent"] = batch[i]["tb_sent"];
+        if (!batch[i].containsKey("values")) {
+            // attempt to move flat keys into values object
+            JsonObject vals = batch[i].createNestedObject("values");
+            const char* keys[] = {"lat","lon","elevation","speed","temp","time_source","last_gps_fix_timestamp","last_temp_read_timestamp","error_code","tb_sent"};
+            for (const char* k : keys) {
+                if (batch[i].containsKey(k)) vals[k] = batch[i][k];
+            }
+        }
     }
 
-    size_t jsonSize = measureJson(tbBatch) + 1;
-    char* payload = (char*)malloc(jsonSize);
-    if (!payload) {
-        Serial.println("[TB][ERR] malloc failed!");
-        return 0;
-    }
+    try {
+        String payload;
+        serializeJson(batch, payload);
 
-    serializeJson(tbBatch, payload, jsonSize);
+        if (!_mqttClient.connected() && !connect()) {
+            Serial.println("[TB][ERR] MQTT not connected");
+            return 0;
+        }
 
-    if (!_mqttClient.connected() && !connect()) {
-        Serial.println("[TB][ERR] MQTT not connected");
-        free(payload);
-        return 0;
-    }
-
-    if (_mqttClient.publish("v1/devices/me/telemetry", payload)) {
-        Serial.printf("[TB] Sent %d records in batch\n", count);
-        sdModule.markBatchAsSent(batch);
-        free(payload);
-        return count;
-    } else {
-        Serial.println("[TB][ERR] Publish failed");
-        free(payload);
+        if (_mqttClient.publish("v1/devices/me/telemetry", payload.c_str())) {
+            Serial.printf("[TB] Sent %d records in batch\n", count);
+            sdModule.markBatchAsSent(batch);
+            return count;
+        } else {
+            Serial.println("[TB][ERR] Publish failed");
+            return 0;
+        }
+    } catch (...) {
+        Serial.println("[TB][ERR] Exception during sendBatchToTB");
         return 0;
     }
 }
+
 

@@ -89,8 +89,8 @@ bool gpsRead() {
 }
 
 bool gpsHasFix() {
-    // Return true if we have acquired a fix or have been running for 5 minutes
-    return fixAcquired || (millis() - gpsStartTime > 5 * 60 * 1000);
+    // Return true only if we acquired a fix. Avoid false positives after timeout.
+    return fixAcquired;
 }
 
 void getGpsData(double &lat, double &lon, double &elevation, double &speed) {

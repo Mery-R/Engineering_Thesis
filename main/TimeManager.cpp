@@ -14,6 +14,9 @@ const char* TimeManager::ntpServer3 = nullptr;
 bool TimeManager::ntpEnabled = false;
 uint32_t TimeManager::lastPeriodicCheck = 0;
 
+// Minimalny timestamp (ms) uważany za sensowny - mniejsze wartości ignorujemy
+const uint64_t TimeManager::MIN_VALID_UNIX_MS = 1763651027000ULL;
+
 // --- begin ---
 void TimeManager::begin(int PPS_PIN) {
     if (PPS_PIN >= 0) pinMode(PPS_PIN, INPUT);
@@ -31,23 +34,33 @@ void TimeManager::enableNtpBackup(const char* s1, const char* s2, const char* s3
 
 // --- synchronizacja ---
 void TimeManager::syncTime(uint64_t unixMs) {
-    baseUnixMs = unixMs;
-    baseMillis = millis();
-    timeValid = true;
+    if (unixMs >= MIN_VALID_UNIX_MS) {
+        baseUnixMs = unixMs;
+        baseMillis = millis();
+        timeValid = true;
+    } else {
+        Serial.println("[TimeManager] syncTime: rejected too-small unixMs");
+    }
 }
 
 // --- aktualizacja z GPS ---
 void TimeManager::updateFromGps() {
     uint64_t gpsUnixMs = gpsGetUnixMillis(); // wywołanie funkcji z GPSModule
     if (gpsUnixMs == 0) return;             // brak valid time
+    if (gpsUnixMs < MIN_VALID_UNIX_MS) {
+        // ignore obviously wrong GPS time
+        Serial.println("[TimeManager] updateFromGps: gps time below MIN_VALID_UNIX_MS, ignoring");
+        return;
+    }
     baseUnixMs = gpsUnixMs;
+    baseMillis = millis();
     timeValid = true;
 }
 
 
 // --- getTimestampMs ---
 uint64_t TimeManager::getTimestampMs() {
-    if (timeValid) {
+    if (timeValid && baseUnixMs >= MIN_VALID_UNIX_MS) {
         uint32_t delta = millis() - baseMillis;
         return baseUnixMs + delta;
     }
@@ -60,7 +73,8 @@ uint64_t TimeManager::getTimestampMs() {
 
 // --- isSynchronized ---
 bool TimeManager::isSynchronized() {
-    return timeValid || (time(nullptr) > 100000);
+    if (timeValid && baseUnixMs >= MIN_VALID_UNIX_MS) return true;
+    return (time(nullptr) > 100000);
 }
 
 // --- getNtpTimeMs ---

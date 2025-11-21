@@ -6,6 +6,18 @@ RingBuffer<T>::RingBuffer(int capacity)
 }
 
 template<typename T>
+RingBuffer<T>::~RingBuffer() {
+  if (_mtx) {
+    vSemaphoreDelete(_mtx);
+    _mtx = nullptr;
+  }
+  if (_buf) {
+    delete[] _buf;
+    _buf = nullptr;
+  }
+}
+
+template<typename T>
 bool RingBuffer<T>::push(const T &d) {
   bool ok = false;
   if (xSemaphoreTake(_mtx, (TickType_t)10) == pdTRUE) {

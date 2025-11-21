@@ -9,6 +9,8 @@ struct WiFiConfig {
     const char* password;
 };
 
+struct ScannedNetwork { String ssid; int rssi; };
+
 class WiFiManager {
 public:
     WiFiManager(const std::vector<WiFiConfig>& configs);
@@ -21,7 +23,7 @@ public:
 
 private:
     std::vector<WiFiConfig> _configs;
-    std::vector<String> _availableSSIDs;
+    std::vector<ScannedNetwork> _scanned;
     int debug = 0;
     const WiFiConfig* chooseBestAP(); // Wybór najlepszego AP po skanie
 };

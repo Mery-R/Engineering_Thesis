@@ -94,13 +94,7 @@ void handleRoot() {
 
 void handleGPSData() {
     // Support both /data_log.txt (JSON lines) and /data.csv (legacy)
-    const char* primaryFile = "/data_log.txt";
-    const char* fallbackFile = "/data.csv";
-    
-    const char* targetFile = primaryFile;
-    if (!SD.exists(primaryFile) && SD.exists(fallbackFile)) {
-        targetFile = fallbackFile;
-    }
+    const char* targetFile = "/data.json";
     
     if (!SD.exists(targetFile)) {
         server.send(404, "text/plain", "Brak danych GPS");
