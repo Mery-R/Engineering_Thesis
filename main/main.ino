@@ -52,6 +52,7 @@ TaskHandle_t goToSleepTaskHandle = NULL;
 
 // Flags used during forced flush/sleep sequence
 volatile bool sdForcedFlag = false;
+volatile bool tbForcedFlag = false;  // Flag to force TB send via RPC
 volatile bool goToSleepRequested = false;
 // WiFi event semaphore (used by WiFiTask)
 SemaphoreHandle_t wifiEventSem = NULL;
@@ -109,27 +110,106 @@ volatile bool shouldGoToSleep = false;
 unsigned long lastButtonPressTime = 0;
 const unsigned long BUTTON_DEBOUNCE_MS = 300;
 
+// -----------------------------------------------------
+// -------------------- Functions ----------------------
+// -----------------------------------------------------
+
+// ISR for wake button
 void IRAM_ATTR handleWakeISR() {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     if (buttonTaskHandle) vTaskNotifyGiveFromISR(buttonTaskHandle, &xHigherPriorityTaskWoken);
     if (xHigherPriorityTaskWoken) portYIELD_FROM_ISR();
 }
 
-// ButtonTask: waits for ISR notification, debounces and signals GoToSleepTask via notification
-void ButtonTask(void* pvParameters) {
+
+
+// RPC Callback for forced send
+void rpcForceCallback(bool forced) {
+    if (forced) {
+        Serial.println("[RPC] Force send requested");
+        tbForcedFlag = true;
+        if (thingsboardTaskHandle) xTaskNotifyGive(thingsboardTaskHandle);
+    }
+}
+
+// -----------------------------------------------------
+// ----------------------- TASKS -----------------------
+// -----------------------------------------------------
+
+// Coordinator: prepares timestamp, triggers sensor reads, waits for completion and pushes snapshot to ring buffer
+void CoordinatorTask(void* pvParameters) {
     for (;;) {
-        // wait for ISR notification
-        if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY) > 0) {
-            unsigned long now = millis();
-            if (now - lastButtonPressTime > BUTTON_DEBOUNCE_MS) {
-                lastButtonPressTime = now;
-                Serial.println("[BUTTON] ISR detected (notif), signaling GoToSleepTask");
-                goToSleepRequested = true;
-                if (goToSleepTaskHandle) xTaskNotifyGive(goToSleepTaskHandle);
+        // Prepare timestamp
+        uint64_t now = TimeManager::getTimestampMs();
+        xSemaphoreTake(dataSem, portMAX_DELAY);
+        data.timestamp = now;
+        data.timestamp_time_source = (WiFi.status()==WL_CONNECTED && TimeManager::isSynchronized())?TIME_WIFI:TIME_LOCAL;
+        xSemaphoreGive(dataSem);
+
+        // Trigger GPS and Temp tasks via notifications
+        if (gpsModuleTaskHandle) xTaskNotifyGive(gpsModuleTaskHandle);
+        if (tempModuleTaskHandle) xTaskNotifyGive(tempModuleTaskHandle);
+
+        // Wait for both to finish (expect two notifications from gps/temp)
+        int done = 0;
+        for (int i = 0; i < 2; ++i) {
+            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(6000)) > 0) done++;
+        }
+
+        // Build a snapshot and push to ring buffer
+        xSemaphoreTake(dataSem, portMAX_DELAY);
+        SensorData snapshot = data;
+        xSemaphoreGive(dataSem);
+
+        if (!ringBuffer.push(snapshot)) {
+            Serial.println("[COORD] RingBuffer full, dropping snapshot");
+        }
+
+        // If enough items accumulated, notify SD task to persist
+        if (ringBuffer.size() >= BATCH_SIZE && sdModuleTaskHandle) {
+            xTaskNotifyGive(sdModuleTaskHandle);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(Delay_GPS));
+    }
+}
+
+// --- Task wołający logikę z WiFiController ---
+void WiFiTask(void* pvParameters) {
+    for (;;) {
+        // react to WiFi events or periodically check
+        if (wifiEventSem) {
+            if (xSemaphoreTake(wifiEventSem, pdMS_TO_TICKS(Delay_TB)) == pdTRUE) {
+                // an event occurred - check status
+                if (WiFi.status() == WL_CONNECTED) {
+                    Serial.println("[WiFiTask] WiFi connected event");
+                    digitalWrite(LED_PIN_1, HIGH);
+                } else {
+                    Serial.println("[WiFiTask] WiFi disconnected event");
+                    digitalWrite(LED_PIN_1, LOW);
+                    // try to reconnect
+                    if (wifiManager.connectToBest()) {
+                        Serial.println("[WiFiTask] Reconnected to WiFi after event");
+                    }
+                }
+            } else {
+                // timeout - perform health check
+                if (!wifiManager.isConnected()) {
+                    Serial.println("[WiFiTask] Periodic check - not connected, attempting reconnect...");
+                    wifiManager.connectToBest();
+                }
             }
+        } else {
+            // no wifiEventSem - fallback to periodic reconnect attempts
+            if (!wifiManager.isConnected()) {
+                Serial.println("[WiFiTask] Not connected, attempting to reconnect...");
+                wifiManager.connectToBest();
+            }
+            vTaskDelay(pdMS_TO_TICKS(Delay_TB));
         }
     }
 }
+
 
 // --- TASK: GPS ---
 void TaskGPS(void* pvParameters){
@@ -257,203 +337,144 @@ void TaskSD(void* pvParameters){
 void TaskTB(void* pvParameters){
     for(;;){
         // Wait for SD notification (new batch) or timeout
+        bool forced = false;
         if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(Delay_TB)) > 0) {
-            // sdSignal taken -> try to send
-            if (WiFi.status()==WL_CONNECTED) {
-                digitalWrite(LED_PIN_3, HIGH);
-                int sent = tbClient.sendBatchToTB(sdModule, BATCH_SIZE);
-                (void)sent;
-                // If sleep was requested, notify GoToSleepTask that TB finished
-                if (goToSleepRequested && goToSleepTaskHandle) {
-                    goToSleepRequested = false;
-                    xTaskNotifyGive(goToSleepTaskHandle);
-                }
-            } else {
-                // try to reconnect
-                if (wifiManager.connectToBest()) {
-                    int sent = tbClient.sendBatchToTB(sdModule, BATCH_SIZE);
-                    (void)sent;
-                    if (goToSleepRequested && goToSleepTaskHandle) {
-                        goToSleepRequested = false;
-                        xTaskNotifyGive(goToSleepTaskHandle);
+            // Check if this is a forced send request
+            if (tbForcedFlag) {
+                forced = true;
+                tbForcedFlag = false;
+            }
+        }
+
+        // Try to send data if WiFi connected
+        if (WiFi.status() == WL_CONNECTED) {
+            if (!tbClient.isConnected()) {
+                tbClient.connect();
+            }
+
+            if (tbClient.isConnected()) {
+                // 1. First, try to send unsent records from SD (marked with tb_sent=false)
+                int sentFromSD = tbClient.sendUnsent(sdModule, BATCH_SIZE);
+                (void)sentFromSD;
+
+                // 2. If forced flag or enough data in ring buffer, send from ring buffer
+                if (forced || ringBuffer.size() >= BATCH_SIZE) {
+                    SensorData batch[BATCH_SIZE];
+                    int count = ringBuffer.popBatch(batch, BATCH_SIZE);
+                    
+                    if (count > 0) {
+                        // Convert to JsonArray
+                        StaticJsonDocument<16384> doc;
+                        JsonArray arr = doc.to<JsonArray>();
+                        for (int i = 0; i < count; ++i) {
+                            JsonObject o = arr.createNestedObject();
+                            o["lat"] = batch[i].lat;
+                            o["lon"] = batch[i].lon;
+                            o["elevation"] = batch[i].elevation;
+                            o["speed"] = batch[i].speed;
+                            o["temp"] = batch[i].temp;
+                            o["timestamp"] = batch[i].timestamp;
+                            o["time_source"] = (int)batch[i].timestamp_time_source;
+                            o["last_gps_fix_timestamp"] = batch[i].last_gps_fix_timestamp;
+                            o["last_temp_read_timestamp"] = batch[i].last_temp_read_timestamp;
+                            o["error_code"] = batch[i].error_code;
+                        }
+                        int sentFromBuffer = tbClient.sendBatchDirect(arr);
+                        (void)sentFromBuffer;
                     }
                 }
             }
+        } else {
+            // Try to reconnect periodically
+            if (!wifiManager.isConnected()) {
+                wifiManager.connectToBest();
+            }
         }
+
+        // If sleep was requested and forced flag was processed, notify GoToSleepTask
+        if (goToSleepRequested && forced && goToSleepTaskHandle) {
+            goToSleepRequested = false;
+            xTaskNotifyGive(goToSleepTaskHandle);
+        }
+
         // loop back; TB mostly driven by notification
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
 
-// Coordinator: prepares timestamp, triggers sensor reads, waits for completion and pushes snapshot to ring buffer
-void CoordinatorTask(void* pvParameters) {
+
+
+// ButtonTask: waits for ISR notification, debounces and signals GoToSleepTask via notification
+void ButtonTask(void* pvParameters) {
     for (;;) {
-        // Prepare timestamp
-        uint64_t now = TimeManager::getTimestampMs();
-        xSemaphoreTake(dataSem, portMAX_DELAY);
-        data.timestamp = now;
-        data.timestamp_time_source = (WiFi.status()==WL_CONNECTED && TimeManager::isSynchronized())?TIME_WIFI:TIME_LOCAL;
-        xSemaphoreGive(dataSem);
-
-        // Trigger GPS and Temp tasks via notifications
-        if (gpsModuleTaskHandle) xTaskNotifyGive(gpsModuleTaskHandle);
-        if (tempModuleTaskHandle) xTaskNotifyGive(tempModuleTaskHandle);
-
-        // Wait for both to finish (expect two notifications from gps/temp)
-        int done = 0;
-        for (int i = 0; i < 2; ++i) {
-            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(6000)) > 0) done++;
+        // wait for ISR notification
+        if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY) > 0) {
+            unsigned long now = millis();
+            if (now - lastButtonPressTime > BUTTON_DEBOUNCE_MS) {
+                lastButtonPressTime = now;
+                Serial.println("[BUTTON] ISR detected (notif), signaling GoToSleepTask");
+                goToSleepRequested = true;
+                if (goToSleepTaskHandle) xTaskNotifyGive(goToSleepTaskHandle);
+            }
         }
-
-        // Build a snapshot and push to ring buffer
-        xSemaphoreTake(dataSem, portMAX_DELAY);
-        SensorData snapshot = data;
-        xSemaphoreGive(dataSem);
-
-        if (!ringBuffer.push(snapshot)) {
-            Serial.println("[COORD] RingBuffer full, dropping snapshot");
-        }
-
-        // If enough items accumulated, notify SD task to persist
-        if (ringBuffer.size() >= BATCH_SIZE && sdModuleTaskHandle) {
-            xTaskNotifyGive(sdModuleTaskHandle);
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(Delay_GPS));
     }
 }
 
-// GoToSleepTask: orchestrates forced SD flush and TB send then sleeps
+// GoToSleepTask: waits for notification from ButtonTask, performs flushes and enters deep sleep
+// --- TASK: GoToSleepTask ---
 void GoToSleepTask(void* pvParameters) {
     for (;;) {
+        // Czekaj na powiadomienie od ButtonTask
         if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY) > 0) {
-            Serial.println("[SLEEP TASK] Starting graceful shutdown: flush SD and TB");
+            Serial.println("[SLEEP TASK] Starting deep sleep sequence...");
 
-            // Request SD to flush remaining records (forced mode)
-            sdForcedFlag = true;
-            if (sdModuleTaskHandle) xTaskNotifyGive(sdModuleTaskHandle);
-
-            // mark that we're waiting for TB to finish
-            goToSleepRequested = true;
-
-            // Wait for TB to signal completion (notified by TB task), timeout 10s
-            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10000)) == 0) {
-                Serial.println("[SLEEP TASK] Timeout waiting for TB, continuing to sleep");
-            } else {
-                Serial.println("[SLEEP TASK] TB signaled completion");
+            // Czekaj na zwolnienie przycisku (max 2s)
+            unsigned long start = millis();
+            while (digitalRead(WAKE_BUTTON_PIN) == LOW && millis() - start < 2000) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+            if (digitalRead(WAKE_BUTTON_PIN) == LOW) {
+                Serial.println("[SLEEP TASK] Button still pressed. Aborting sleep.");
+                continue; // wróć do czekania na powiadomienie
             }
 
-            // prepare wakeup
-            Serial.println("[SLEEP TASK] Preparing to enter deep sleep");
+            Serial.println("[SLEEP TASK] Button released, waiting for debounce...");
+            vTaskDelay(pdMS_TO_TICKS(500));
+
+            // --- Wymuszenie flush SD i wysyłki TB ---
+            sdForcedFlag = true;
+            tbForcedFlag = true;
+            if (sdModuleTaskHandle) xTaskNotifyGive(sdModuleTaskHandle);
+            if (thingsboardTaskHandle) xTaskNotifyGive(thingsboardTaskHandle);
+
+            // --- Czekaj na zakończenie obu operacji (max 5s na każde) ---
+            if (sdModuleTaskHandle) {
+                if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000)) == 0) {
+                    Serial.println("[SLEEP TASK] Timeout waiting for SD flush.");
+                } else {
+                    Serial.println("[SLEEP TASK] SD flush completed.");
+                }
+            }
+
+            if (thingsboardTaskHandle) {
+                if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000)) == 0) {
+                    Serial.println("[SLEEP TASK] Timeout waiting for TB send.");
+                } else {
+                    Serial.println("[SLEEP TASK] TB send completed.");
+                }
+            }
+
+            // --- Ustawienie wakeup i deep sleep ---
             esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_BUTTON_PIN, 0);
-            delay(100);
+            Serial.println("[SLEEP TASK] Going to sleep.");
+            vTaskDelay(pdMS_TO_TICKS(100));
             esp_deep_sleep_start();
         }
     }
 }
 
-// --- Task wołający logikę z WiFiController ---
-void WiFiTask(void* pvParameters) {
-    for (;;) {
-        // react to WiFi events or periodically check
-        if (wifiEventSem) {
-            if (xSemaphoreTake(wifiEventSem, pdMS_TO_TICKS(Delay_TB)) == pdTRUE) {
-                // an event occurred - check status
-                if (WiFi.status() == WL_CONNECTED) {
-                    Serial.println("[WiFiTask] WiFi connected event");
-                    digitalWrite(LED_PIN_1, HIGH);
-                } else {
-                    Serial.println("[WiFiTask] WiFi disconnected event");
-                    digitalWrite(LED_PIN_1, LOW);
-                    // try to reconnect
-                    if (wifiManager.connectToBest()) {
-                        Serial.println("[WiFiTask] Reconnected to WiFi after event");
-                    }
-                }
-            } else {
-                // timeout - perform health check
-                if (!wifiManager.isConnected()) {
-                    Serial.println("[WiFiTask] Periodic check - not connected, attempting reconnect...");
-                    wifiManager.connectToBest();
-                }
-            }
-        } else {
-            // no wifiEventSem - fallback to periodic reconnect attempts
-            if (!wifiManager.isConnected()) {
-                Serial.println("[WiFiTask] Not connected, attempting to reconnect...");
-                wifiManager.connectToBest();
-            }
-            vTaskDelay(pdMS_TO_TICKS(Delay_TB));
-        }
-    }
-}
 
-void goToDeepSleep() {
-    Serial.println("[SLEEP] Preparing for deep sleep...");
-    Serial.println("[SLEEP] Please release the button...");
-    
-    // Czekaj aż przycisk zostanie zwolniony (HIGH = zwolniony, INPUT_PULLUP)
-    unsigned long releaseWaitStart = millis();
-    while (digitalRead(WAKE_BUTTON_PIN) == LOW && millis() - releaseWaitStart < 2000) {
-        delay(50);
-    }
-    
-    if (digitalRead(WAKE_BUTTON_PIN) == LOW) {
-        Serial.println("[SLEEP] Button still pressed after 2 seconds. Aborting sleep.");
-        return;
-    }
-    
-    Serial.println("[SLEEP] Button released. Waiting for debounce...");
-    delay(500);  // Czekaj na ustabilizowanie się sygnału
 
-    // zezwól na wybudzenie przyciskiem
-    esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_BUTTON_PIN, 0);
-
-    // jeśli chcesz dodatkowy timer:
-    // esp_sleep_enable_timer_wakeup(10 * 60 * 1000000ULL);
-
-    Serial.println("[SLEEP] Going to sleep.");
-    delay(100);
-    // Before sleeping, flush any remaining buffered data to SD and attempt TB send
-    {
-        SensorData batch[10];
-        // pop remaining batches and append
-        while (ringBuffer.size() > 0) {
-            int cnt = ringBuffer.popBatch(batch, 10);
-            if (cnt <= 0) break;
-
-            StaticJsonDocument<16384> doc;
-            JsonArray arr = doc.to<JsonArray>();
-            for (int i = 0; i < cnt; ++i) {
-                JsonObject o = arr.createNestedObject();
-                o["lat"] = batch[i].lat;
-                o["lon"] = batch[i].lon;
-                o["elevation"] = batch[i].elevation;
-                o["speed"] = batch[i].speed;
-                o["temp"] = batch[i].temp;
-                o["timestamp"] = batch[i].timestamp;
-                o["time_source"] = (int)batch[i].timestamp_time_source;
-                o["last_gps_fix_timestamp"] = batch[i].last_gps_fix_timestamp;
-                o["last_temp_read_timestamp"] = batch[i].last_temp_read_timestamp;
-                o["error_code"] = batch[i].error_code;
-                o["tb_sent"] = batch[i].tb_sent;
-            }
-            bool ok = false;
-            try { ok = sdModule.appendRecords(arr); } catch(...) { ok = false; }
-            if (!ok) Serial.println("[SLEEP][SD] Failed to save batch before sleep");
-        }
-
-        // Try to connect WiFi and send TB batch
-        if (wifiManager.connectToBest()) {
-            if (tbClient.isConnected() || tbClient.connect()) {
-                int sent = tbClient.sendBatchToTB(sdModule, 500);
-                (void)sent;
-            }
-        }
-    }
-
-    esp_deep_sleep_start();
-}
 
 
 // --- SETUP ---
@@ -470,10 +491,13 @@ void setup(){
     Serial.println("[INIT] Starting...");
 
     pinMode(WAKE_BUTTON_PIN, INPUT_PULLUP);
-    // Button handled via ISR -> task (notifications used)
+    pinMode(LED_PIN_1, OUTPUT);
+    pinMode(LED_PIN_2, OUTPUT);
+    pinMode(LED_PIN_3, OUTPUT);
+    attachInterrupt(digitalPinToInterrupt(WAKE_BUTTON_PIN), handleWakeISR, FALLING);
+
     sdSignal = xSemaphoreCreateBinary();
     wifiEventSem = xSemaphoreCreateBinary();
-
     dataSem = xSemaphoreCreateMutex();
 
     if (sdModule.begin()){
@@ -484,8 +508,6 @@ void setup(){
     }
 
     wifiManager.begin();
-
-    // Register WiFi event -> notify wifiEventSem
     if (wifiEventSem) {
         WiFi.onEvent([](WiFiEvent_t event){
             (void)event;
@@ -497,11 +519,9 @@ void setup(){
         Serial.println("[MAIN] Could not connect to any AP, retrying later...");
     }
 
-    pinMode(LED_PIN_1, OUTPUT);
-    pinMode(LED_PIN_2, OUTPUT);
-    pinMode(LED_PIN_3, OUTPUT);
-    
-    
+    // Register RPC callback
+    tbClient.setRpcCallback(rpcForceCallback);
+
     gpsInit(GPS_BAUDRATE, GPS_RX_PIN, GPS_TX_PIN);
     Serial.println("[GPS] Initialized");
 
@@ -509,21 +529,16 @@ void setup(){
     Serial.println("[TEMP] DS18B20 initialized");
 
     TimeManager::begin(PPS_PIN);
-
-    // Opcjonalnie NTP jako backup
     TimeManager::enableNtpBackup("pool.ntp.org", "time.google.com", "time.cloudflare.com");
 
+    xTaskCreate(CoordinatorTask, "Coordinator", 8192, NULL, 2, &coordinatorTaskHandle);
+    xTaskCreate(WiFiTask, "WiFiTask", 8192, NULL, 1,  &wifiTaskHandle);
     xTaskCreate(TaskGPS,  "GPSTask",  8192, NULL, 1,  &gpsModuleTaskHandle);
     xTaskCreate(TaskTemp, "TempTask", 8192, NULL, 1,  &tempModuleTaskHandle);
     xTaskCreate(TaskSD,   "SDTask",   16384, NULL, 1,  &sdModuleTaskHandle);
     xTaskCreate(TaskTB,   "TBTask",   16384, NULL, 1,  &thingsboardTaskHandle);
-    xTaskCreate(WiFiTask, "WiFiTask", 8192, NULL, 1,  &wifiTaskHandle);
     xTaskCreate(ButtonTask, "ButtonTask", 4096, NULL, 1, &buttonTaskHandle);
-    xTaskCreate(CoordinatorTask, "Coordinator", 8192, NULL, 2, &coordinatorTaskHandle);
     xTaskCreate(GoToSleepTask, "GoToSleep", 8192, NULL, 2, &goToSleepTaskHandle);
-
-    // attach ISR for button
-    attachInterrupt(digitalPinToInterrupt(WAKE_BUTTON_PIN), handleWakeISR, FALLING);
 
     startWebServer(80);
     Serial.println("[WEB] Server started");
