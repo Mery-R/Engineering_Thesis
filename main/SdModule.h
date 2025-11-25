@@ -13,6 +13,8 @@ public:
 
     bool begin();
 
+    bool softClose();
+
     // Dodaje nowe rekordy do pliku (przekaż JsonArray przygotowany w main)
     // Records are stored as newline-delimited JSON arrays (each line = one batch array)
     // Each call appends one JSON array (one line) containing the records.
@@ -32,6 +34,9 @@ public:
 private:
     uint8_t _csPin;
     String _filename;
+    File _file;
+    bool _isOpen = false;
+
     
     // Helper to populate a single TB-style object item in array
     void appendItemToArray(JsonObject &item, JsonObject &src);

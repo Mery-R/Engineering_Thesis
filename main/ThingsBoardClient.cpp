@@ -13,7 +13,7 @@ ThingsBoardClient::ThingsBoardClient(const char* server, int port,
       _password(password),
       _mqttClient(_wifiClient)
 {
-    _mqttClient.setBufferSize(16384); 
+    _mqttClient.setBufferSize(32768); 
 }
 
 
@@ -123,6 +123,8 @@ int ThingsBoardClient::sendUnsent(SdModule &sdModule, int maxItems) {
     try {
         String payload;
         serializeJson(batch, payload);
+        Serial.printf("[TB][DBG] sendBatch bytes=%d items=%d\n", (int)payload.length(), batch.size());
+        Serial.println(payload); // albo limituj: payload.substring(0,512)
 
         if (!_mqttClient.connected() && !connect()) {
             Serial.println("[TB][ERR] MQTT not connected");
@@ -157,6 +159,8 @@ int ThingsBoardClient::sendBatchToTB(SdModule &sdModule, int maxItems) {
     try {
         String payload;
         serializeJson(batch, payload);
+        Serial.printf("[TB][DBG] sendBatch bytes=%d items=%d\n", (int)payload.length(), batch.size());
+        Serial.println(payload); // albo limituj: payload.substring(0,512)
 
         if (!_mqttClient.connected() && !connect()) {
             Serial.println("[TB][ERR] MQTT not connected");

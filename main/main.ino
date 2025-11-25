@@ -1,6 +1,7 @@
 #include <WiFi.h>
-#include <SPI.h>
-#include <SD.h>
+#include "FS.h"
+#include "SD.h"
+#include "SPI.h"
 #include <ArduinoJson.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -18,12 +19,11 @@ SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
 // --- Wi-Fi settings ---
 std::vector<WiFiConfig> WIFI_CONFIG = {
     {"KTO-Rosomak", "12345678"},
-    {"siec1", "haslo1"},
-    {"siec2", "haslo2"}
+    {"Dom2", "xyz"},
+    {"Hotspot", "..." }
 };
 
 WiFiManager wifiManager(WIFI_CONFIG);
-TaskHandle_t wifiTaskHandle = nullptr;
 
 // --- ThingsBoard settings ---
 const char* THINGSBOARD_SERVER = "demo.thingsboard.io";
@@ -42,7 +42,7 @@ TaskHandle_t sdModuleTaskHandle = NULL;
 SemaphoreHandle_t sdSignal = NULL; // kept for compatibility (not used for pipeline)
 
 // Pipeline configuration (parameterize sizes)
-const int RINGBUFFER_CAPACITY = 10; // change as needed
+const int RINGBUFFER_CAPACITY = 2; // change as needed
 const int BATCH_SIZE = 2; // number of records that trigger SD write
 
 // Task handles for notifications
@@ -54,6 +54,7 @@ TaskHandle_t goToSleepTaskHandle = NULL;
 volatile bool sdForcedFlag = false;
 volatile bool tbForcedFlag = false;  // Flag to force TB send via RPC
 volatile bool goToSleepRequested = false;
+
 // WiFi event semaphore (used by WiFiTask)
 SemaphoreHandle_t wifiEventSem = NULL;
 
@@ -75,9 +76,10 @@ const int Delay_GPS = 15000;
 const int Delay_Temp = 15000;
 const int Delay_SD = 15000;
 const int Delay_TB = 30000; // dłuższy interwał dla TB
+unsigned long lastSDSend = 0;
+const unsigned long sdSendInterval = 1000; // 1 sekunda między wysyłkami SD
 
 // --- Data structure ---
-enum TimeSource : uint8_t { TIME_GPS = 0, TIME_WIFI = 1, TIME_LOCAL = 2 };
 #define ERR_GPS_NO_FIX   (1 << 0)
 #define ERR_TEMP_FAIL    (1 << 1)
 #define ERR_SD_FAIL      (1 << 2)
@@ -122,7 +124,6 @@ void IRAM_ATTR handleWakeISR() {
 }
 
 
-
 // RPC Callback for forced send
 void rpcForceCallback(bool forced) {
     if (forced) {
@@ -143,7 +144,7 @@ void CoordinatorTask(void* pvParameters) {
         uint64_t now = TimeManager::getTimestampMs();
         xSemaphoreTake(dataSem, portMAX_DELAY);
         data.timestamp = now;
-        data.timestamp_time_source = (WiFi.status()==WL_CONNECTED && TimeManager::isSynchronized())?TIME_WIFI:TIME_LOCAL;
+        data.timestamp_time_source = TimeManager::getTimeSource();
         xSemaphoreGive(dataSem);
 
         // Trigger GPS and Temp tasks via notifications
@@ -174,39 +175,41 @@ void CoordinatorTask(void* pvParameters) {
     }
 }
 
-// --- Task wołający logikę z WiFiController ---
-void WiFiTask(void* pvParameters) {
-    for (;;) {
-        // react to WiFi events or periodically check
-        if (wifiEventSem) {
-            if (xSemaphoreTake(wifiEventSem, pdMS_TO_TICKS(Delay_TB)) == pdTRUE) {
-                // an event occurred - check status
-                if (WiFi.status() == WL_CONNECTED) {
-                    Serial.println("[WiFiTask] WiFi connected event");
-                    digitalWrite(LED_PIN_1, HIGH);
-                } else {
-                    Serial.println("[WiFiTask] WiFi disconnected event");
-                    digitalWrite(LED_PIN_1, LOW);
-                    // try to reconnect
-                    if (wifiManager.connectToBest()) {
-                        Serial.println("[WiFiTask] Reconnected to WiFi after event");
-                    }
-                }
-            } else {
-                // timeout - perform health check
-                if (!wifiManager.isConnected()) {
-                    Serial.println("[WiFiTask] Periodic check - not connected, attempting reconnect...");
-                    wifiManager.connectToBest();
-                }
-            }
-        } else {
-            // no wifiEventSem - fallback to periodic reconnect attempts
-            if (!wifiManager.isConnected()) {
-                Serial.println("[WiFiTask] Not connected, attempting to reconnect...");
-                wifiManager.connectToBest();
-            }
-            vTaskDelay(pdMS_TO_TICKS(Delay_TB));
+// WifiEventHandler: handles WiFi events
+void WiFiEventHandler(void* arg, esp_event_base_t base, int32_t id, void* data)
+{
+    WiFiManager* mgr = static_cast<WiFiManager*>(arg);
+
+    if (base == WIFI_EVENT) {
+        switch (id) {
+
+        // Station started
+        case WIFI_EVENT_STA_START:
+            Serial.println("[WiFiEvent] Connecting...");
+            mgr->connectToBest();
+            break;
+        
+        // Station connected
+        case WIFI_EVENT_STA_CONNECTED:
+            Serial.println("[WiFiEvent] Connected");
+            digitalWrite(LED_PIN_1, HIGH);
+            break;
+
+        // Station disconnected
+        case WIFI_EVENT_STA_DISCONNECTED:
+            Serial.println("[WiFiEvent] Dicsonnected");
+            digitalWrite(LED_PIN_1, LOW);
+            mgr->connectToBest();
+            break;
+
         }
+    }
+
+    // Print IP address when got IP
+    if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        auto* event = (ip_event_got_ip_t*)data;
+        Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+
     }
 }
 
@@ -296,8 +299,8 @@ void TaskSD(void* pvParameters){
                 continue;
             }
         }
-        count = ringBuffer.popBatch(batch, BATCH_SIZE);
-        if(count>0){
+
+        if (ringBuffer.size() >= BATCH_SIZE){
             // convert SensorData[] -> JsonArray and pass to SdModule
             StaticJsonDocument<16384> doc;
             JsonArray arr = doc.to<JsonArray>();
@@ -325,6 +328,7 @@ void TaskSD(void* pvParameters){
                 data.error_code |= ERR_SD_FAIL;
                 xSemaphoreGive(dataSem);
             } else {
+                digitalWrite(LED_PIN_3, HIGH);
                 // notify TB task that SD has new data
                 if (thingsboardTaskHandle) xTaskNotifyGive(thingsboardTaskHandle);
             }
@@ -336,34 +340,27 @@ void TaskSD(void* pvParameters){
 // --- TASK: ThingsBoard ---
 void TaskTB(void* pvParameters){
     for(;;){
-        // Wait for SD notification (new batch) or timeout
         bool forced = false;
-        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(Delay_TB)) > 0) {
-            // Check if this is a forced send request
+
+        // Sprawdzenie notyfikacji lub forced send
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100)) > 0) {
             if (tbForcedFlag) {
                 forced = true;
                 tbForcedFlag = false;
             }
         }
 
-        // Try to send data if WiFi connected
         if (WiFi.status() == WL_CONNECTED) {
-            if (!tbClient.isConnected()) {
-                tbClient.connect();
-            }
+            if (!tbClient.isConnected()) tbClient.connect();
 
             if (tbClient.isConnected()) {
-                // 1. First, try to send unsent records from SD (marked with tb_sent=false)
-                int sentFromSD = tbClient.sendUnsent(sdModule, BATCH_SIZE);
-                (void)sentFromSD;
+                unsigned long now = millis();
 
-                // 2. If forced flag or enough data in ring buffer, send from ring buffer
+                // 1. Wysyłka z ring buffer jeśli pełny lub forced
                 if (forced || ringBuffer.size() >= BATCH_SIZE) {
                     SensorData batch[BATCH_SIZE];
                     int count = ringBuffer.popBatch(batch, BATCH_SIZE);
-                    
                     if (count > 0) {
-                        // Convert to JsonArray
                         StaticJsonDocument<16384> doc;
                         JsonArray arr = doc.to<JsonArray>();
                         for (int i = 0; i < count; ++i) {
@@ -379,26 +376,32 @@ void TaskTB(void* pvParameters){
                             o["last_temp_read_timestamp"] = batch[i].last_temp_read_timestamp;
                             o["error_code"] = batch[i].error_code;
                         }
-                        int sentFromBuffer = tbClient.sendBatchDirect(arr);
-                        (void)sentFromBuffer;
+                        if (tbClient.sendBatchDirect(arr)){
+                            Serial.printf("[TB] Sent %d records from RingBuffer\n", count);
+                        } else {
+                            Serial.println("[TB][ERR] Failed to send batch from RingBuffer");
+                        }
+                    }
+                }
+
+                // 2. Wysyłka danych z SD jeśli są niewysłane, co sdSendInterval
+                if (now - lastSDSend >= sdSendInterval) {
+                    if (tbClient.sendUnsent(sdModule, BATCH_SIZE) > 0) {
+                        lastSDSend = now;
                     }
                 }
             }
         } else {
-            // Try to reconnect periodically
-            if (!wifiManager.isConnected()) {
-                wifiManager.connectToBest();
-            }
+            if (!wifiManager.isConnected()) wifiManager.connectToBest();
         }
 
-        // If sleep was requested and forced flag was processed, notify GoToSleepTask
-        if (goToSleepRequested && forced && goToSleepTaskHandle) {
+        // Sleep task
+        if (goToSleepRequested && forced) {
             goToSleepRequested = false;
             xTaskNotifyGive(goToSleepTaskHandle);
         }
 
-        // loop back; TB mostly driven by notification
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(50)); // krótki delay, pętla reaguje szybko
     }
 }
 
@@ -464,6 +467,8 @@ void GoToSleepTask(void* pvParameters) {
                 }
             }
 
+            sdModule.softClose(); //--- Zamknięcie SD przed snem ---
+
             // --- Ustawienie wakeup i deep sleep ---
             esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_BUTTON_PIN, 0);
             Serial.println("[SLEEP TASK] Going to sleep.");
@@ -508,16 +513,6 @@ void setup(){
     }
 
     wifiManager.begin();
-    if (wifiEventSem) {
-        WiFi.onEvent([](WiFiEvent_t event){
-            (void)event;
-            if (wifiEventSem) xSemaphoreGive(wifiEventSem);
-        });
-    }
-
-    if(!wifiManager.connectToBest()) {
-        Serial.println("[MAIN] Could not connect to any AP, retrying later...");
-    }
 
     // Register RPC callback
     tbClient.setRpcCallback(rpcForceCallback);
@@ -532,13 +527,12 @@ void setup(){
     TimeManager::enableNtpBackup("pool.ntp.org", "time.google.com", "time.cloudflare.com");
 
     xTaskCreate(CoordinatorTask, "Coordinator", 8192, NULL, 2, &coordinatorTaskHandle);
-    xTaskCreate(WiFiTask, "WiFiTask", 8192, NULL, 1,  &wifiTaskHandle);
     xTaskCreate(TaskGPS,  "GPSTask",  8192, NULL, 1,  &gpsModuleTaskHandle);
     xTaskCreate(TaskTemp, "TempTask", 8192, NULL, 1,  &tempModuleTaskHandle);
     xTaskCreate(TaskSD,   "SDTask",   16384, NULL, 1,  &sdModuleTaskHandle);
     xTaskCreate(TaskTB,   "TBTask",   16384, NULL, 1,  &thingsboardTaskHandle);
     xTaskCreate(ButtonTask, "ButtonTask", 4096, NULL, 1, &buttonTaskHandle);
-    xTaskCreate(GoToSleepTask, "GoToSleep", 8192, NULL, 2, &goToSleepTaskHandle);
+    xTaskCreate(GoToSleepTask, "GoToSleep", 4096, NULL, 2, &goToSleepTaskHandle);
 
     startWebServer(80);
     Serial.println("[WEB] Server started");

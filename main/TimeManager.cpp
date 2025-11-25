@@ -7,6 +7,7 @@
 volatile uint64_t TimeManager::baseUnixMs = 0;
 volatile uint32_t TimeManager::baseMillis = 0;
 volatile bool TimeManager::timeValid = false;
+TimeSource TimeManager::currentSource = TIME_LOCAL;
 
 const char* TimeManager::ntpServer1 = nullptr;
 const char* TimeManager::ntpServer2 = nullptr;
@@ -32,44 +33,65 @@ void TimeManager::enableNtpBackup(const char* s1, const char* s2, const char* s3
     configTime(0, 0, s1, s2, s3);
 }
 
+// --- aktualizacja z GPS ---
+void TimeManager::updateFromGps() {
+    uint64_t gpsUnixMs = gpsGetUnixMillis();
+    if (gpsUnixMs == 0) return;
+    if (gpsUnixMs < MIN_VALID_UNIX_MS) {
+        Serial.println("[TimeManager] updateFromGps: gps time below MIN_VALID_UNIX_MS, ignoring");
+        return;
+    }
+
+    baseUnixMs = gpsUnixMs;
+    baseMillis = millis();
+    timeValid = true;
+    currentSource = TIME_GPS;
+}
+
 // --- synchronizacja ---
 void TimeManager::syncTime(uint64_t unixMs) {
     if (unixMs >= MIN_VALID_UNIX_MS) {
         baseUnixMs = unixMs;
         baseMillis = millis();
         timeValid = true;
+        currentSource = TIME_WIFI;
     } else {
         Serial.println("[TimeManager] syncTime: rejected too-small unixMs");
     }
 }
 
-// --- aktualizacja z GPS ---
-void TimeManager::updateFromGps() {
-    uint64_t gpsUnixMs = gpsGetUnixMillis(); // wywołanie funkcji z GPSModule
-    if (gpsUnixMs == 0) return;             // brak valid time
-    if (gpsUnixMs < MIN_VALID_UNIX_MS) {
-        // ignore obviously wrong GPS time
-        Serial.println("[TimeManager] updateFromGps: gps time below MIN_VALID_UNIX_MS, ignoring");
-        return;
-    }
-    baseUnixMs = gpsUnixMs;
-    baseMillis = millis();
-    timeValid = true;
-}
+
+
+
 
 
 // --- getTimestampMs ---
 uint64_t TimeManager::getTimestampMs() {
+    // 1. GPS lub poprzednio zsynchronizowany czas
     if (timeValid && baseUnixMs >= MIN_VALID_UNIX_MS) {
         uint32_t delta = millis() - baseMillis;
         return baseUnixMs + delta;
     }
 
+    // 2. NTP jeśli dostępne
     uint64_t ntpMs = getNtpTimeMs();
-    if (ntpMs > 0) return ntpMs;
+    if (ntpMs > 0) {
+        currentSource = TIME_WIFI;
+        return ntpMs;
+    }
 
+    // 3. Brak wszystkiego → czas lokalny
+    currentSource = TIME_LOCAL;
     return millis();
 }
+
+// --- getTimeSource ---
+TimeSource TimeManager::getTimeSource() {
+    return currentSource;
+}
+
+
+
 
 // --- isSynchronized ---
 bool TimeManager::isSynchronized() {

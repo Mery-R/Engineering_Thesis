@@ -1,4 +1,3 @@
-// WiFiManager.cpp
 #include "WiFiManager.h"
 
 WiFiManager::WiFiManager(const std::vector<WiFiConfig>& configs)
@@ -9,35 +8,55 @@ WiFiManager::WiFiManager(const std::vector<WiFiConfig>& configs)
 void WiFiManager::begin() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true);
+
     Serial.println("[WiFiManager] Initialized");
+
+    // Rejestracja eventów ESP32
+    esp_event_loop_create_default();
+
+    esp_event_handler_instance_register(
+        WIFI_EVENT,
+        ESP_EVENT_ANY_ID,
+        &WiFiEventHandler,
+        this,
+        NULL
+    );
+
+    esp_event_handler_instance_register(
+        IP_EVENT,
+        IP_EVENT_STA_GOT_IP,
+        &WiFiEventHandler,
+        this,
+        NULL
+    );
 }
 
+
 void WiFiManager::startScan() {
-    Serial.println("[WiFiManager] Scanning networks...");
+    Serial.println("[WiFiManager] Scanning...");
     int n = WiFi.scanNetworks(false, true);
+
     _scanned.clear();
     for (int i = 0; i < n; ++i) {
         ScannedNetwork sn;
         sn.ssid = WiFi.SSID(i);
         sn.rssi = WiFi.RSSI(i);
         _scanned.push_back(sn);
-        if (debug) {
-            Serial.printf("[WiFiManager] Found: %s (%d dBm)\n", sn.ssid.c_str(), sn.rssi);
-        }
+        if (debug) Serial.printf("  %s (%d dBm)\n", sn.ssid.c_str(), sn.rssi);
     }
-    if(n == 0) Serial.println("[WiFiManager] No networks found");
+
+    if (n == 0) Serial.println("[WiFiManager] No networks found");
 }
 
 const WiFiConfig* WiFiManager::chooseBestAP() {
     const WiFiConfig* best = nullptr;
-    int32_t bestRSSI = -1000;
+    int bestRSSI = -1000;
+
     for (auto& cfg : _configs) {
         for (auto& sn : _scanned) {
-            if (sn.ssid == cfg.ssid) {
-                if (sn.rssi > bestRSSI) {
-                    bestRSSI = sn.rssi;
-                    best = &cfg;
-                }
+            if (sn.ssid == cfg.ssid && sn.rssi > bestRSSI) {
+                bestRSSI = sn.rssi;
+                best = &cfg;
             }
         }
     }
@@ -46,25 +65,20 @@ const WiFiConfig* WiFiManager::chooseBestAP() {
 
 bool WiFiManager::connectToBest() {
     startScan();
+
     const WiFiConfig* cfg = chooseBestAP();
-    if(!cfg) {
-        Serial.println("[WiFiManager] No configured APs available");
+    if (!cfg) {
+        Serial.println("[WiFiManager] No known AP found");
         return false;
     }
 
-    Serial.printf("[WiFiManager] Connecting to %s ...\n", cfg->ssid);
-    WiFi.begin(cfg->ssid, cfg->password);
+    connectTo(cfg);
+    return true;
+}
 
-    unsigned long start = millis();
-    while (millis() - start < 10000) {
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.printf("[WiFiManager] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
-            return true;
-        }
-        delay(200);
-    }
-    Serial.println("[WiFiManager] Connection failed");
-    return false;
+void WiFiManager::connectTo(const WiFiConfig* cfg) {
+    Serial.printf("[WiFiManager] Connecting to %s...\n", cfg->ssid);
+    WiFi.begin(cfg->ssid, cfg->password);
 }
 
 void WiFiManager::disconnect() {

@@ -1,6 +1,7 @@
 #include "SdModule.h"
-#include <SPI.h>
-#include <SD.h>
+#include "FS.h"
+#include "SD.h"
+#include "SPI.h"
 #include <ArduinoJson.h>
 #include <vector>
 
@@ -31,6 +32,17 @@ bool SdModule::begin() {
     }
 
     Serial.println("[SD] Ready");
+    return true;
+}
+
+bool SdModule::softClose() {
+    if (_file) {
+        _file.flush();
+        _file.close();
+    }
+
+    SD.end();
+    delay(50);
     return true;
 }
 
@@ -78,7 +90,7 @@ bool SdModule::appendRecords(JsonArray &records) {
     }
 
     // Append serialized array as single line
-    File fw = SD.open(_filename, FILE_WRITE);
+    File fw = SD.open(_filename, FILE_APPEND);
     if (!fw) {
         Serial.println("[SD] Cannot open file for appending");
         return false;
