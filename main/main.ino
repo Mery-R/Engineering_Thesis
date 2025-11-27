@@ -5,6 +5,7 @@
 #include <ArduinoJson.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include "SensorData.h"
 #include "RingBuffer.h"
 #include "ThingsBoardClient.h"
 #include "SdModule.h"
@@ -16,101 +17,123 @@
 
 SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
 
-// --- Wi-Fi settings ---
+// -----------------------------------------------------
+// ---------------- WiFi & ThingsBoard -----------------
+// -----------------------------------------------------
+
+// WiFi settings
+// {SSID, Password}
 std::vector<WiFiConfig> WIFI_CONFIG = {
     {"KTO-Rosomak", "12345678"},
     {"Dom2", "xyz"},
     {"Hotspot", "..." }
 };
 
-WiFiManager wifiManager(WIFI_CONFIG);
+// ThingsBoard settings
+const char* THINGSBOARD_SERVER = "demo.thingsboard.io"; // ThingsBoard server address (demo.thingsboard.io for demo server)
+const int THINGSBOARD_PORT = 1883;                      // ThingsBoard server port (1883 for MQTT)
+const char* MQTT_CLIENT_ID = "esp32_test";              // Client ID for ThingsBoard
+const char* MQTT_USERNAME  = "user123";                 // Username for ThingsBoard
+const char* MQTT_PASSWORD  = "8erz5sxd48lm797nr4ch";    // Password for ThingsBoard
 
-// --- ThingsBoard settings ---
-const char* THINGSBOARD_SERVER = "demo.thingsboard.io";
-const int THINGSBOARD_PORT = 1883;
-const char* MQTT_CLIENT_ID = "esp32_test";
-const char* MQTT_USERNAME  = "user123";
-const char* MQTT_PASSWORD  = "haslo123";
-ThingsBoardClient tbClient(THINGSBOARD_SERVER, THINGSBOARD_PORT, MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD);
-TaskHandle_t thingsboardTaskHandle = NULL;
 
-// --- SD card settings ---
-const uint8_t SD_CS_PIN = 5;
-SdModule sdModule(SD_CS_PIN);
-TaskHandle_t sdModuleTaskHandle = NULL;
+// -----------------------------------------------------
+// ------------------ GPIO Settings --------------------
+// -----------------------------------------------------
 
-SemaphoreHandle_t sdSignal = NULL; // kept for compatibility (not used for pipeline)
+// LED pinout
+#define LED_WiFi 25
+#define LED_GPS 26
+#define LED_SD 27
 
-// Pipeline configuration (parameterize sizes)
-const int RINGBUFFER_CAPACITY = 2; // change as needed
-const int BATCH_SIZE = 2; // number of records that trigger SD write
+// GPS pinout
+#define PPS_PIN 32
+#define GPS_RX_PIN 16
+#define GPS_TX_PIN 17
+#define GPS_BAUDRATE 115200
 
-// Task handles for notifications
+// SD card pinout
+#define SD_CS_PIN 5
+
+// DS18B20 pinout
+#define ONE_WIRE_BUS 4
+
+// Wake button pinout
+#define WAKE_BUTTON_PIN 33
+
+// -----------------------------------------------------
+// -------------------- Settings -----------------------
+// -----------------------------------------------------
+
+// Delays 
+#define Delay_MAIN 15000 // Delay in milliseconds for main loop
+#define Delay_SD 15000 // Delay in milliseconds for SD card operations
+#define Delay_WIFI 30000 // Delay in milliseconds for WiFi operations
+
+// SD card settings
+const unsigned long sdSendInterval = 100; // Time in ms between SD sends
+
+// Ring buffer settings
+const int RINGBUFFER_CAPACITY = 4; // Size of the ring buffer
+const int BATCH_SIZE = 2; // Number of records that trigger SD write
+
+
+
+// -----------------------------------------------------
+// ---------- DO NOT CHANGE BELOW THIS LINE ------------
+// -----------------------------------------------------
+
+
+
+// -----------------------------------------------------
+// ------------------- Constants -----------------------
+// -----------------------------------------------------
+
+// Flags for forced sending
+volatile bool sdForcedFlag = false;
+volatile bool tbForcedFlag = false;
+// Flags for sleep
+volatile bool goToSleepRequested = false;
+// Flags for button debouncing
+unsigned long lastButtonPressTime = 0;
+const unsigned long BUTTON_DEBOUNCE_MS = 300;
+// Flags for SD and TB sending
+unsigned long lastSDSend = 0;
+// Data structure
+SensorData data;
+
+// -----------------------------------------------------
+// -------------------- Semaphores ---------------------
+// -----------------------------------------------------
+
+SemaphoreHandle_t dataSem;
+SemaphoreHandle_t wifiEventSem = NULL;
+SemaphoreHandle_t sdSignal = NULL;
+
+// -----------------------------------------------------
+// -------------------- Task Handlers ------------------
+// -----------------------------------------------------
+
 TaskHandle_t coordinatorTaskHandle = NULL;
 TaskHandle_t buttonTaskHandle = NULL;
 TaskHandle_t goToSleepTaskHandle = NULL;
-
-// Flags used during forced flush/sleep sequence
-volatile bool sdForcedFlag = false;
-volatile bool tbForcedFlag = false;  // Flag to force TB send via RPC
-volatile bool goToSleepRequested = false;
-
-// WiFi event semaphore (used by WiFiTask)
-SemaphoreHandle_t wifiEventSem = NULL;
-
-// --- GPS settings ---
-const int GPS_RX_PIN = 16;
-const int GPS_TX_PIN = 17;
-const int GPS_BAUDRATE = 115200;
-const int PPS_PIN = 32;
+TaskHandle_t tempModuleTaskHandle = NULL;
 TaskHandle_t gpsModuleTaskHandle = NULL;
+TaskHandle_t sdModuleTaskHandle = NULL;
+TaskHandle_t thingsboardTaskHandle = NULL;
+TaskHandle_t wifiTaskHandle = NULL;
 
-// --- DS18B20 settings ---
-#define ONE_WIRE_BUS 4
+// -----------------------------------------------------
+// -------------------- Modules ------------------------
+// -----------------------------------------------------
+
+SdModule sdModule(SD_CS_PIN);
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature tempSensor(&oneWire);
-TaskHandle_t tempModuleTaskHandle = NULL;
-
-// --- Delays ---
-const int Delay_GPS = 15000;
-const int Delay_Temp = 15000;
-const int Delay_SD = 15000;
-const int Delay_TB = 30000; // dłuższy interwał dla TB
-unsigned long lastSDSend = 0;
-const unsigned long sdSendInterval = 1000; // 1 sekunda między wysyłkami SD
-
-// --- Data structure ---
-#define ERR_GPS_NO_FIX   (1 << 0)
-#define ERR_TEMP_FAIL    (1 << 1)
-#define ERR_SD_FAIL      (1 << 2)
-#define ERR_TB_FAIL      (1 << 3)
-
-struct SensorData {
-  double lat;
-  double lon;
-  double elevation;
-  double speed;
-  float temp;
-  uint64_t timestamp;
-  TimeSource timestamp_time_source;
-  uint64_t last_gps_fix_timestamp;
-  uint64_t last_temp_read_timestamp;
-  uint8_t error_code;
-  bool tb_sent; 
-};
-SensorData data;
-SemaphoreHandle_t dataSem;
+WiFiManager wifiManager(WIFI_CONFIG);
 RingBuffer<SensorData> ringBuffer(RINGBUFFER_CAPACITY);
-
-const int LED_PIN_1 = 25;
-const int LED_PIN_2 = 26;
-const int LED_PIN_3 = 27;
-
-#define WAKE_BUTTON_PIN 33
-
-volatile bool shouldGoToSleep = false;
-unsigned long lastButtonPressTime = 0;
-const unsigned long BUTTON_DEBOUNCE_MS = 300;
+GpsModule gpsModule(GPS_RX_PIN, GPS_TX_PIN, GPS_BAUDRATE);
+ThingsBoardClient tbClient(THINGSBOARD_SERVER, THINGSBOARD_PORT, MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD);
 
 // -----------------------------------------------------
 // -------------------- Functions ----------------------
@@ -171,7 +194,31 @@ void CoordinatorTask(void* pvParameters) {
             xTaskNotifyGive(sdModuleTaskHandle);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(Delay_GPS));
+        vTaskDelay(pdMS_TO_TICKS(Delay_MAIN));
+    }
+}
+
+// --- TASK: WiFi Watchdog ---
+void TaskWiFi(void* pvParameters) {
+    for (;;) {
+        // Wait for notification (from EventHandler) or timeout (30s periodic check)
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(Delay_WIFI));
+
+        if (WiFi.status() != WL_CONNECTED) {
+            Serial.println("[WiFi] WiFi lost/disconnected. Attempting reconnect...");
+            try {
+                wifiManager.connectToBest();
+            } catch (...) {
+                Serial.println("[WiFi] Exception during reconnect");
+            }
+
+            // If still disconnected, wait a bit to avoid rapid looping (debounce)
+            if (WiFi.status() != WL_CONNECTED) {
+                 vTaskDelay(pdMS_TO_TICKS(Delay_WIFI)); 
+                 // Clear any notifications received during this backoff to avoid immediate re-trigger
+                 ulTaskNotifyTake(pdTRUE, 0);
+            }
+        }
     }
 }
 
@@ -185,21 +232,20 @@ void WiFiEventHandler(void* arg, esp_event_base_t base, int32_t id, void* data)
 
         // Station started
         case WIFI_EVENT_STA_START:
-            Serial.println("[WiFiEvent] Connecting...");
-            mgr->connectToBest();
+            // Notify WiFi Task to handle connection (prevents double scan)
+            if (wifiTaskHandle) xTaskNotifyGive(wifiTaskHandle);
             break;
         
         // Station connected
         case WIFI_EVENT_STA_CONNECTED:
-            Serial.println("[WiFiEvent] Connected");
-            digitalWrite(LED_PIN_1, HIGH);
+            digitalWrite(LED_WiFi, HIGH);
             break;
 
         // Station disconnected
         case WIFI_EVENT_STA_DISCONNECTED:
-            Serial.println("[WiFiEvent] Dicsonnected");
-            digitalWrite(LED_PIN_1, LOW);
-            mgr->connectToBest();
+            digitalWrite(LED_WiFi, LOW);
+            // Notify WiFi Task to handle reconnection
+            if (wifiTaskHandle) xTaskNotifyGive(wifiTaskHandle);
             break;
 
         }
@@ -208,7 +254,7 @@ void WiFiEventHandler(void* arg, esp_event_base_t base, int32_t id, void* data)
     // Print IP address when got IP
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         auto* event = (ip_event_got_ip_t*)data;
-        Serial.printf("IP: %s\n", WiFi.localIP().toString().c_str());
+        Serial.printf("[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
 
     }
 }
@@ -219,34 +265,39 @@ void TaskGPS(void* pvParameters){
     for(;;){
         // wait until coordinator notifies this task
         if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY) > 0) {
-            gpsWake();
+            gpsModule.wake();
             bool gpsOk = false;
             unsigned long start = millis();
 
             while(millis()-start < 5000) {
-              gpsOk = gpsRead() || gpsOk;
+              gpsOk = gpsModule.process() || gpsOk;
               vTaskDelay(5);
             }
 
             uint64_t now = TimeManager::getTimestampMs();
 
             xSemaphoreTake(dataSem, portMAX_DELAY);
-            if(gpsOk && gpsHasFix()){
-                TimeManager::updateFromGps();
-                double lat, lon, elev, speed;
-                getGpsData(lat, lon, elev, speed);
-                data.lat = lat;
-                data.lon = lon;
-                data.elevation = elev;
-                data.speed = speed;
+            if(gpsOk && gpsModule.hasFix()){
+                TimeManager::updateFromGps(gpsModule.getUnixTime());
+                GpsDataPacket packet = gpsModule.getData();
+                data.lat = packet.lat;
+                data.lon = packet.lon;
+                data.elevation = packet.elevation;
+                data.speed = packet.speed;
                 data.last_gps_fix_timestamp = now;
                 data.error_code &= ~ERR_GPS_NO_FIX;
-                digitalWrite(LED_PIN_2, HIGH);
+                digitalWrite(LED_GPS, HIGH);
             } else {
                 data.error_code |= ERR_GPS_NO_FIX;
-                digitalWrite(LED_PIN_2, LOW);
+                digitalWrite(LED_GPS, LOW);
             }
+            
+            // Log status using the module's method
+            gpsModule.logStatus(gpsOk);
+
             xSemaphoreGive(dataSem);
+            
+            gpsModule.sleep(); // Put GPS to sleep after reading
 
             // notify coordinator that GPS read finished
             if (coordinatorTaskHandle) xTaskNotifyGive(coordinatorTaskHandle);
@@ -263,15 +314,17 @@ void TaskTemp(void* pvParameters){
             uint64_t now = TimeManager::getTimestampMs();
 
             xSemaphoreTake(dataSem, portMAX_DELAY);
-            if(tempC != DEVICE_DISCONNECTED_C && tempC>-55 && tempC<125){
-                data.temp = tempC; data.last_temp_read_timestamp = now;
+            if(tempC>-55 && tempC<125){
+                data.temp = tempC; 
+                data.last_temp_read_timestamp = now;
                 data.error_code &= ~ERR_TEMP_FAIL;
+                Serial.println("[TEMP] Temp: " + String(tempC));
             } else {
                 data.error_code |= ERR_TEMP_FAIL;
+                Serial.println("[TEMP] Error");
             }
             xSemaphoreGive(dataSem);
 
-            // notify coordinator that Temp read finished
             if (coordinatorTaskHandle) xTaskNotifyGive(coordinatorTaskHandle);
         }
     }
@@ -282,9 +335,7 @@ void TaskSD(void* pvParameters){
     SensorData batch[BATCH_SIZE];
     for(;;){
         // Wait until notified to process (either normal batch or forced flush via sdForcedFlag)
-        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(Delay_SD)) == 0) {
-            continue;
-        }
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         bool forced = false;
         if (sdForcedFlag) {
@@ -298,42 +349,44 @@ void TaskSD(void* pvParameters){
             if (ringBuffer.size() < BATCH_SIZE) {
                 continue;
             }
+        } else {
+            // If forced but empty, we still need to acknowledge if sleep requested
+            if (ringBuffer.size() == 0) {
+                 if (goToSleepRequested && goToSleepTaskHandle) {
+                     xTaskNotifyGive(goToSleepTaskHandle);
+                 }
+                 continue;
+            }
         }
 
-        if (ringBuffer.size() >= BATCH_SIZE){
-            // convert SensorData[] -> JsonArray and pass to SdModule
-            StaticJsonDocument<16384> doc;
+        if (forced || ringBuffer.size() >= BATCH_SIZE){
+            JsonDocument doc;
             JsonArray arr = doc.to<JsonArray>();
-            for (int i = 0; i < count; ++i) {
-                JsonObject o = arr.createNestedObject();
-                o["lat"] = batch[i].lat;
-                o["lon"] = batch[i].lon;
-                o["elevation"] = batch[i].elevation;
-                o["speed"] = batch[i].speed;
-                o["temp"] = batch[i].temp;
-                o["timestamp"] = batch[i].timestamp;
-                o["time_source"] = (int)batch[i].timestamp_time_source;
-                o["last_gps_fix_timestamp"] = batch[i].last_gps_fix_timestamp;
-                o["last_temp_read_timestamp"] = batch[i].last_temp_read_timestamp;
-                o["error_code"] = batch[i].error_code;
-                o["tb_sent"] = batch[i].tb_sent;
-            }
-            bool ok = false;
-            try { ok = sdModule.appendRecords(arr); } catch(...) { ok = false; }
+            
+            count = ringBuffer.popBatch(batch, BATCH_SIZE);
+            
+            if (count > 0) {
+                bool ok = sdModule.appendBatch(batch, count);
 
-            if(!ok){
-                digitalWrite(LED_PIN_3, LOW);
-                Serial.println("[SD][ERR] Append failed!");
-                xSemaphoreTake(dataSem, portMAX_DELAY);
-                data.error_code |= ERR_SD_FAIL;
-                xSemaphoreGive(dataSem);
-            } else {
-                digitalWrite(LED_PIN_3, HIGH);
-                // notify TB task that SD has new data
-                if (thingsboardTaskHandle) xTaskNotifyGive(thingsboardTaskHandle);
+                if(!ok){
+                    digitalWrite(LED_SD, LOW);
+                    Serial.println("[SD][ERR] Append failed!");
+                    xSemaphoreTake(dataSem, portMAX_DELAY);
+                    data.error_code |= ERR_SD_FAIL;
+                    xSemaphoreGive(dataSem);
+                } else {
+                    digitalWrite(LED_SD, HIGH);
+                    Serial.printf("[SD] Appended %d records\n", count);
+                    // notify TB task that SD has new data
+                    if (thingsboardTaskHandle) xTaskNotifyGive(thingsboardTaskHandle);
+                    
+                    // If forced (sleep), notify sleep task
+                    if (forced && goToSleepRequested && goToSleepTaskHandle) {
+                        xTaskNotifyGive(goToSleepTaskHandle);
+                    }
+                }
             }
         }
-        vTaskDelay(pdMS_TO_TICKS(Delay_SD));
     }
 }
 
@@ -343,11 +396,12 @@ void TaskTB(void* pvParameters){
         bool forced = false;
 
         // Sprawdzenie notyfikacji lub forced send
-        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100)) > 0) {
-            if (tbForcedFlag) {
-                forced = true;
-                tbForcedFlag = false;
-            }
+        // Wait for notification OR timeout (1s) to check for offline data
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+
+        if (tbForcedFlag) {
+            forced = true;
+            tbForcedFlag = false;
         }
 
         if (WiFi.status() == WL_CONNECTED) {
@@ -361,20 +415,12 @@ void TaskTB(void* pvParameters){
                     SensorData batch[BATCH_SIZE];
                     int count = ringBuffer.popBatch(batch, BATCH_SIZE);
                     if (count > 0) {
-                        StaticJsonDocument<16384> doc;
+                        // Use JsonDocument for automatic memory management
+                        JsonDocument doc;
                         JsonArray arr = doc.to<JsonArray>();
                         for (int i = 0; i < count; ++i) {
                             JsonObject o = arr.createNestedObject();
-                            o["lat"] = batch[i].lat;
-                            o["lon"] = batch[i].lon;
-                            o["elevation"] = batch[i].elevation;
-                            o["speed"] = batch[i].speed;
-                            o["temp"] = batch[i].temp;
-                            o["timestamp"] = batch[i].timestamp;
-                            o["time_source"] = (int)batch[i].timestamp_time_source;
-                            o["last_gps_fix_timestamp"] = batch[i].last_gps_fix_timestamp;
-                            o["last_temp_read_timestamp"] = batch[i].last_temp_read_timestamp;
-                            o["error_code"] = batch[i].error_code;
+                            sensorDataToJson(batch[i], o);
                         }
                         if (tbClient.sendBatchDirect(arr)){
                             Serial.printf("[TB] Sent %d records from RingBuffer\n", count);
@@ -391,8 +437,6 @@ void TaskTB(void* pvParameters){
                     }
                 }
             }
-        } else {
-            if (!wifiManager.isConnected()) wifiManager.connectToBest();
         }
 
         // Sleep task
@@ -401,7 +445,6 @@ void TaskTB(void* pvParameters){
             xTaskNotifyGive(goToSleepTaskHandle);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(50)); // krótki delay, pętla reaguje szybko
     }
 }
 
@@ -447,6 +490,7 @@ void GoToSleepTask(void* pvParameters) {
             // --- Wymuszenie flush SD i wysyłki TB ---
             sdForcedFlag = true;
             tbForcedFlag = true;
+            goToSleepRequested = true; // Set global flag so tasks know to notify back
             if (sdModuleTaskHandle) xTaskNotifyGive(sdModuleTaskHandle);
             if (thingsboardTaskHandle) xTaskNotifyGive(thingsboardTaskHandle);
 
@@ -466,8 +510,6 @@ void GoToSleepTask(void* pvParameters) {
                     Serial.println("[SLEEP TASK] TB send completed.");
                 }
             }
-
-            sdModule.softClose(); //--- Zamknięcie SD przed snem ---
 
             // --- Ustawienie wakeup i deep sleep ---
             esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_BUTTON_PIN, 0);
@@ -493,12 +535,10 @@ void setup(){
         Serial.println("[BOOT] Cold start");
     }
 
-    Serial.println("[INIT] Starting...");
-
     pinMode(WAKE_BUTTON_PIN, INPUT_PULLUP);
-    pinMode(LED_PIN_1, OUTPUT);
-    pinMode(LED_PIN_2, OUTPUT);
-    pinMode(LED_PIN_3, OUTPUT);
+    pinMode(LED_WiFi, OUTPUT);
+    pinMode(LED_GPS, OUTPUT);
+    pinMode(LED_SD, OUTPUT);
     attachInterrupt(digitalPinToInterrupt(WAKE_BUTTON_PIN), handleWakeISR, FALLING);
 
     sdSignal = xSemaphoreCreateBinary();
@@ -506,19 +546,17 @@ void setup(){
     dataSem = xSemaphoreCreateMutex();
 
     if (sdModule.begin()){
-        digitalWrite(LED_PIN_3, HIGH);
+        digitalWrite(LED_SD, HIGH);
     }
     else{
-        digitalWrite(LED_PIN_3, LOW);
+        digitalWrite(LED_SD, LOW);
     }
 
     wifiManager.begin();
 
-    // Register RPC callback
     tbClient.setRpcCallback(rpcForceCallback);
 
-    gpsInit(GPS_BAUDRATE, GPS_RX_PIN, GPS_TX_PIN);
-    Serial.println("[GPS] Initialized");
+    gpsModule.begin();
 
     tempSensor.begin();
     Serial.println("[TEMP] DS18B20 initialized");
@@ -526,21 +564,25 @@ void setup(){
     TimeManager::begin(PPS_PIN);
     TimeManager::enableNtpBackup("pool.ntp.org", "time.google.com", "time.cloudflare.com");
 
+    startWebServer(80);
+    Serial.println("[WEB] Server started");
+
     xTaskCreate(CoordinatorTask, "Coordinator", 8192, NULL, 2, &coordinatorTaskHandle);
     xTaskCreate(TaskGPS,  "GPSTask",  8192, NULL, 1,  &gpsModuleTaskHandle);
     xTaskCreate(TaskTemp, "TempTask", 8192, NULL, 1,  &tempModuleTaskHandle);
     xTaskCreate(TaskSD,   "SDTask",   16384, NULL, 1,  &sdModuleTaskHandle);
     xTaskCreate(TaskTB,   "TBTask",   16384, NULL, 1,  &thingsboardTaskHandle);
+    xTaskCreate(TaskWiFi, "WiFiTask", 4096, NULL, 1, &wifiTaskHandle);
     xTaskCreate(ButtonTask, "ButtonTask", 4096, NULL, 1, &buttonTaskHandle);
     xTaskCreate(GoToSleepTask, "GoToSleep", 4096, NULL, 2, &goToSleepTaskHandle);
 
-    startWebServer(80);
-    Serial.println("[WEB] Server started");
+    // Kickstart WiFi task to connect immediately
+    if (wifiTaskHandle) xTaskNotifyGive(wifiTaskHandle);
+
+    // Delete the default Arduino loopTask as we use FreeRTOS tasks
+    vTaskDelete(NULL);
 }
-
-
 
 void loop() {
 
 }
-

@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 #include <time.h>
-#include "GpsModule.h"
+
 
 // Źródło czasu
 enum TimeSource {
@@ -22,7 +22,7 @@ public:
     static uint64_t getTimestampMs();
     static bool isSynchronized();
 
-    static void updateFromGps();
+    static void updateFromGps(uint64_t gpsUnixMs);
     static void periodicCheck();
 
     static TimeSource getTimeSource();

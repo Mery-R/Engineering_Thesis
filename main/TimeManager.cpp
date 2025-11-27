@@ -34,8 +34,7 @@ void TimeManager::enableNtpBackup(const char* s1, const char* s2, const char* s3
 }
 
 // --- aktualizacja z GPS ---
-void TimeManager::updateFromGps() {
-    uint64_t gpsUnixMs = gpsGetUnixMillis();
+void TimeManager::updateFromGps(uint64_t gpsUnixMs) {
     if (gpsUnixMs == 0) return;
     if (gpsUnixMs < MIN_VALID_UNIX_MS) {
         Serial.println("[TimeManager] updateFromGps: gps time below MIN_VALID_UNIX_MS, ignoring");

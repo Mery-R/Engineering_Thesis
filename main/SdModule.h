@@ -2,42 +2,35 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <SD.h>
-#include "TimeManager.h"      // jeśli używasz funkcji getTimestamp(), isTimeSynced()
-#include "GpsModule.h"       // nadal potrzebne do interfejsu GPS
+#include "SensorData.h"
 #include <ArduinoJson.h>
-
 
 class SdModule {
 public:
-    SdModule(uint8_t csPin);
+    SdModule(int csPin);
 
     bool begin();
 
-    bool softClose();
+    // Appends a batch of records in JSONLines format
+    bool appendBatch(const SensorData* batch, int count);
 
-    // Dodaje nowe rekordy do pliku (przekaż JsonArray przygotowany w main)
-    // Records are stored as newline-delimited JSON arrays (each line = one batch array)
-    // Each call appends one JSON array (one line) containing the records.
-    bool appendRecords(JsonArray &records);
+    // Checks file size and rotates if necessary
+    void checkFileSizeAndRotate();
 
-    // Odczytuje batch rekordów (maks. maxItems) do JsonArray
-    // onlyNotSent: jeśli true - zwraca tylko rekordy z tb_sent == false
+    // Reads a batch of records from the file (parsing JSONLines)
+    // NOTE: This needs to be implemented to support ThingsBoardClient
     int readBatch(JsonArray &outArray, int maxItems, bool onlyNotSent = true);
 
-    // Oznacza rekordy jako wysłane (przekazany JsonArray zawiera rekordy wysłane)
+    // Marks records as sent (in JSONLines, this might require rewriting the file or appending a "sent" log)
+    // For now, we might need a placeholder or a different strategy for "mark as sent" with append-only files.
     void markBatchAsSent(JsonArray &sentRecords);
-
-    // (Single append method removed - use appendRecords(JsonArray&) to write a batch)
 
     bool clear();
 
 private:
-    uint8_t _csPin;
-    String _filename;
-    File _file;
-    bool _isOpen = false;
+    int _csPin;
+    const char* _filename = "/data.jsonl";
+    const size_t MAX_FILE_SIZE = 1024 * 1024; // 1MB
 
-    
-    // Helper to populate a single TB-style object item in array
-    void appendItemToArray(JsonObject &item, JsonObject &src);
+    void rotateFile();
 };

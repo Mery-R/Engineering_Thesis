@@ -1,43 +1,73 @@
-#pragma once
+#ifndef GPS_MODULE_H
+#define GPS_MODULE_H
+
+#include <Arduino.h>
 #include <TinyGPSPlus.h>
 #include <HardwareSerial.h>
-#include "TimeManager.h"
+#include <time.h>
 
-/**
- * GPS Module Interface
- * 
- * This module provides a simple interface to interact with a GPS receiver
- * connected via UART. The main sensor data structure (SensorData) is intentionally
- * NOT defined here, per project design decision. It's defined in main.ino and used
- * only in the main translation unit.
- * 
- * Thread-safety: These functions are called from TaskGPS and should not be accessed
- * from other tasks without proper synchronization.
- */
+// Struktura pomocnicza do zwracania kompletu danych
+struct GpsDataPacket {
+    double lat;
+    double lon;
+    double elevation;
+    double speed;
+    uint32_t satellites;
+    double hdop;
+    bool valid;
+};
 
-// Initialize GPS serial communication
-void gpsInit(long baudrate, int RX, int TX);
+class GpsModule {
+public:
+    // Konstruktor: przyjmuje numery pinów, baudrate i numer UART (domyślnie 1 dla ESP32)
+    GpsModule(int rxPin, int txPin, long baudRate = 115200, int uartNr = 1);
 
-// Wake GPS from sleep mode
-void gpsWake();
+    // Inicjalizacja portu szeregowego
+    void begin();
 
-// Put GPS into sleep/standby mode
-void gpsSleep();
+    // Wybudzanie modułu (Quectel PAIR commands)
+    void wake();
 
-// Read and process incoming GPS data (call frequently in a loop)
-bool gpsRead();
+    // Usypianie modułu (Quectel PAIR commands)
+    void sleep();
 
-// Check if GPS has a valid fix
-bool gpsHasFix();
+    // Główna funkcja odczytu - powinna być wołana w pętli przez określony czas
+    // Zwraca true, jeśli odebrano i zdekodowano poprawne zdanie NMEA
+    bool process();
 
-// Get the last known GPS coordinates and speed
-void getGpsData(double &lat, double &lon, double &elevation, double &speed);
+    // Sprawdza, czy mamy aktualny FIX (na podstawie valid flag i czasu ostatniego odczytu)
+    bool hasFix();
 
-// Returns GPS-derived Unix timestamp in milliseconds (UTC). If GPS date/time
-// is not valid this returns 0.
-uint64_t gpsGetUnixMillis();
+    // Zwraca strukturę z danymi
+    GpsDataPacket getData();
 
-// Returns true if GPS provides a valid date/time right now
-bool gpsTimeAvailable();
+    // Zwraca czas uniksowy w ms (zsynchronizowany z GPS)
+    uint64_t getUnixTime();
 
+    // Sprawdza czy czas jest dostępny
+    bool isTimeAvailable();
 
+    // Loguje status GPS (sukces/błąd) na Serial
+    void logStatus(bool gpsOk);
+
+private:
+    HardwareSerial _gpsSerial;
+    TinyGPSPlus _gps;
+    
+    int _rxPin;
+    int _txPin;
+    long _baudRate;
+    
+    unsigned long _lastFixTime;
+    bool _fixAcquired;
+    
+    // Stałe konfiguracyjne
+    const unsigned long GPS_DATA_TIMEOUT_MS = 5000; 
+    const bool DEBUG_RAW = false;
+
+    // Helper do sumy kontrolnej (opcjonalny, bo TinyGPS+ sprawdza sumy, 
+    // ale potrzebny jeśli chcemy ręcznie weryfikować komunikaty PAIR)
+    bool validateChecksum();
+};
+
+#endif // GPS_MODULE_H

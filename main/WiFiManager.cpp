@@ -9,7 +9,7 @@ void WiFiManager::begin() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true);
 
-    Serial.println("[WiFiManager] Initialized");
+    Serial.println("[WiFi] Initialized");
 
     // Rejestracja eventów ESP32
     esp_event_loop_create_default();
@@ -33,7 +33,7 @@ void WiFiManager::begin() {
 
 
 void WiFiManager::startScan() {
-    Serial.println("[WiFiManager] Scanning...");
+    Serial.println("[WiFi] Scanning...");
     int n = WiFi.scanNetworks(false, true);
 
     _scanned.clear();
@@ -45,7 +45,7 @@ void WiFiManager::startScan() {
         if (debug) Serial.printf("  %s (%d dBm)\n", sn.ssid.c_str(), sn.rssi);
     }
 
-    if (n == 0) Serial.println("[WiFiManager] No networks found");
+    if (n == 0) Serial.println("[WiFi] No networks found");
 }
 
 const WiFiConfig* WiFiManager::chooseBestAP() {
@@ -68,7 +68,7 @@ bool WiFiManager::connectToBest() {
 
     const WiFiConfig* cfg = chooseBestAP();
     if (!cfg) {
-        Serial.println("[WiFiManager] No known AP found");
+        Serial.println("[WiFi] No known AP found");
         return false;
     }
 
@@ -77,13 +77,13 @@ bool WiFiManager::connectToBest() {
 }
 
 void WiFiManager::connectTo(const WiFiConfig* cfg) {
-    Serial.printf("[WiFiManager] Connecting to %s...\n", cfg->ssid);
+    Serial.printf("[WiFi] Connecting to %s...\n", cfg->ssid);
     WiFi.begin(cfg->ssid, cfg->password);
 }
 
 void WiFiManager::disconnect() {
     WiFi.disconnect(true);
-    Serial.println("[WiFiManager] Disconnected");
+    Serial.println("[WiFi] Disconnected");
 }
 
 bool WiFiManager::isConnected() const {

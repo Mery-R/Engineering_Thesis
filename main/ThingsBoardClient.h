@@ -17,10 +17,6 @@ public:
     bool isConnected();
     void loop();
 
-    // Pobiera batch danych z SD i wysyła je hurtowo na ThingsBoard
-    // Po udanej wysyłce wywołuje SdModule::markBatchAsSent()
-    int sendBatchToTB(SdModule &sdModule, int maxItems);
-
     // Wysyła dane bezpośrednio z JsonArray (z ringBuffer) do ThingsBoard
     int sendBatchDirect(JsonArray &batch);
 

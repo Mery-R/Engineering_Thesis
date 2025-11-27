@@ -12,13 +12,12 @@ ThingsBoardClient::ThingsBoardClient(const char* server, int port,
       _username(username),
       _password(password),
       _mqttClient(_wifiClient)
-{
-    _mqttClient.setBufferSize(32768); 
-}
+{}
 
 
 bool ThingsBoardClient::connect() {
     _mqttClient.setServer(_server, _port);
+    _mqttClient.setBufferSize(4096);
 
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("[TB] WiFi not connected!");
@@ -29,6 +28,7 @@ bool ThingsBoardClient::connect() {
         Serial.printf("[TB] Connecting to MQTT broker %s:%d...\n", _server, _port);
         if (_mqttClient.connect(_clientId, _username, _password)) {
             Serial.println("[TB] Connected via MQTT!");
+            Serial.printf("[TB] MQTT Buffer Size: %d\n", _mqttClient.getBufferSize());
              _mqttClient.subscribe("v1/devices/me/rpc/request/+");
             return true;
         } else {
@@ -81,7 +81,23 @@ static void formatTelemetry(JsonArray &batch) {
 }
 
 // -------------------
-// Wysyła dane bezpośrednio z JsonArray (z ringBuffer)
+// Wysyła dane bezpośrednio z JsonArray (z ringBuffer) do ThingsBoard
+// Format danych (JSON):
+// [
+//   {
+//     "lat": double,
+//     "lon": double,
+//     "elevation": double,
+//     "speed": double,
+//     "temp": float,
+//     "timestamp": uint64 (ms),
+//     "time_source": int,
+//     "last_gps_fix_timestamp": uint64 (ms),
+//     "last_temp_read_timestamp": uint64 (ms),
+//     "error_code": uint8
+//   },
+//   ...
+// ]
 int ThingsBoardClient::sendBatchDirect(JsonArray &batch) {
     if (batch.size() == 0) return 0;
 
@@ -112,7 +128,8 @@ int ThingsBoardClient::sendBatchDirect(JsonArray &batch) {
 // -------------------
 // Wysyła rekordy z SD które mają tb_sent=false
 int ThingsBoardClient::sendUnsent(SdModule &sdModule, int maxItems) {
-    StaticJsonDocument<16384> doc;
+    // Use JsonDocument for automatic memory management
+    JsonDocument doc;
     JsonArray batch = doc.to<JsonArray>();
 
     int count = sdModule.readBatch(batch, maxItems, true); // true = only unsent
@@ -141,42 +158,6 @@ int ThingsBoardClient::sendUnsent(SdModule &sdModule, int maxItems) {
         }
     } catch (...) {
         Serial.println("[TB][ERR] Exception during sendUnsent");
-        return 0;
-    }
-}
-
-// -------------------
-// Hurtowa wysyłka batcha danych SD
-int ThingsBoardClient::sendBatchToTB(SdModule &sdModule, int maxItems) {
-    StaticJsonDocument<16384> doc;
-    JsonArray batch = doc.to<JsonArray>();
-
-    int count = sdModule.readBatch(batch, maxItems, false);
-    if (count == 0) return 0;
-
-    formatTelemetry(batch);
-
-    try {
-        String payload;
-        serializeJson(batch, payload);
-        Serial.printf("[TB][DBG] sendBatch bytes=%d items=%d\n", (int)payload.length(), batch.size());
-        Serial.println(payload); // albo limituj: payload.substring(0,512)
-
-        if (!_mqttClient.connected() && !connect()) {
-            Serial.println("[TB][ERR] MQTT not connected");
-            return 0;
-        }
-
-        if (_mqttClient.publish("v1/devices/me/telemetry", payload.c_str())) {
-            Serial.printf("[TB] Sent %d records in batch\n", count);
-            sdModule.markBatchAsSent(batch);
-            return count;
-        } else {
-            Serial.println("[TB][ERR] Publish failed");
-            return 0;
-        }
-    } catch (...) {
-        Serial.println("[TB][ERR] Exception during sendBatchToTB");
         return 0;
     }
 }

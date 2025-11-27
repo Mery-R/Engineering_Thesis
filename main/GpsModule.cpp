@@ -1,151 +1,162 @@
 #include "GpsModule.h"
-#include <Arduino.h>
-#include <time.h>
 
-#define GPS_RAW_DEBUG false
-#define GPS_NO_DATA_TIMEOUT 2000  // ms bez danych
-
-static TinyGPSPlus gps;
-static HardwareSerial GPSSerial(1);
-static unsigned long lastGpsDataTime = 0;
-
-// Store current GPS values as primitives (struct is kept in main only)
-static double currentLat = 0.0;
-static double currentLon = 0.0;
-static double currentElevation = 0.0;
-static double currentSpeed = 0.0;
-static bool fixAcquired = false;
-static unsigned long gpsStartTime = 0;
-
-void gpsInit(long baudrate, int RX, int TX) {
-    Serial.println("[GPS] Inicjalizacja portu szeregowego...");
-    GPSSerial.begin(baudrate, SERIAL_8N1, RX, TX);
-    Serial.printf("[GPS] Baudrate: %ld | RX: %d | TX: %d\n", baudrate, RX, TX);
-    lastGpsDataTime = millis();
-    gpsStartTime = millis();
+GpsModule::GpsModule(int rxPin, int txPin, long baudRate, int uartNr)
+    : _gpsSerial(uartNr), _rxPin(rxPin), _txPin(txPin), _baudRate(baudRate), 
+      _lastFixTime(0), _fixAcquired(false) {
 }
 
-void gpsSleep() {
-    Serial.println("[GPS] Przejście w tryb Standby...");
-    GPSSerial.println("$PAIR382,1*2E");
-    delay(100);
-    GPSSerial.println("$PAIR003*39");
+void GpsModule::begin() {
+    try {
+        Serial.print("[GPS] Inicjalizacja obiektu GpsModule ---> ");
+        _gpsSerial.begin(_baudRate, SERIAL_8N1, _rxPin, _txPin);
+        Serial.printf("Config: Baud=%ld, RX=%d, TX=%d ---> ", _baudRate, _rxPin, _txPin);
+        _lastFixTime = millis();
+        Serial.println("Inicjalizacja zakończona");
+    } catch (...) {
+        Serial.println("[GPS][CRITICAL] Wyjątek podczas inicjalizacji HardwareSerial!");
+    }
 }
 
-void gpsWake() {
-    Serial.println("[GPS] Wybudzanie...");
-    GPSSerial.println("$PAIR002*38");
-    delay(2000);
+void GpsModule::wake() {
+    try {
+        Serial.println("[GPS] WAKE");
+        // Zgodnie z dokumentacją Quectel: $PAIR002*38
+        _gpsSerial.println("$PAIR002*38");
+        // Krótkie opóźnienie na rozruch
+        delay(200); 
+    } catch (...) {
+        Serial.println("[GPS][ERR] Błąd podczas wybudzania.");
+    }
 }
 
-bool gpsRead() {
-    bool newFrame = false;
-
-    while (GPSSerial.available() > 0) {
-        char c = GPSSerial.read();
-        lastGpsDataTime = millis();
-        if (GPS_RAW_DEBUG) Serial.write(c);
+void GpsModule::sleep() {
+    try {
+        Serial.println("[GPS] SLEEP");
+        // 1. Zablokowanie trybu uśpienia (Lock System Sleep) - $PAIR382,1*2E
+        //    Dokumentacja str. 42: "CM4 will entry Standby if application not working."
+        _gpsSerial.println("$PAIR382,1*2E");
+        delay(100);
         
-        if (!gps.encode(c)) {
-            static unsigned long lastChecksumWarn = 0;
-            if (millis() - lastChecksumWarn > 5000) {
-                Serial.println("[GPS][WARN] Niepoprawna suma NMEA (ignoruję).");
-                lastChecksumWarn = millis();
+        // 2. Power Off GNSS system - $PAIR003*39
+        //    Dokumentacja str. 22: "Powers off the GNSS system... CM4 will be set to the Standby mode."
+        _gpsSerial.println("$PAIR003*39");
+    } catch (...) {
+        Serial.println("[GPS][ERR] Błąd podczas usypiania.");
+    }
+}
+
+bool GpsModule::process() {
+    bool encoded = false;
+    try {
+        while (_gpsSerial.available() > 0) {
+            char c = _gpsSerial.read();
+            if (DEBUG_RAW) Serial.write(c);
+
+            if (_gps.encode(c)) {
+                encoded = true;
+                
+                // Jeśli mamy ważne dane lokalizacyjne, aktualizujemy timestamp
+                if (_gps.location.isValid()) {
+                    _lastFixTime = millis();
+                    if (!_fixAcquired) {
+                        Serial.println("[GPS] Pierwszy FIX po wybudzeniu/starcie!");
+                        _fixAcquired = true;
+                    }
+                }
             }
+        }
+        
+        // Sprawdzenie timeoutu danych (czy moduł w ogóle coś nadaje)
+        if (millis() - _lastFixTime > (GPS_DATA_TIMEOUT_MS * 4) && _fixAcquired) {
+             // Ostrzeżenie tylko jeśli mieliśmy fixa, a teraz cisza totalna na linii
+             // Serial.println("[GPS][WARN] Długa cisza na porcie RX.");
+        }
+
+    } catch (...) {
+        Serial.println("[GPS][ERR] Wyjątek w process()");
+    }
+    return encoded;
+}
+
+bool GpsModule::hasFix() {
+    // Uznajemy FIX za ważny, jeśli biblioteka mówi isValid ORAZ dane są świeże (np. < 5 sek)
+    // TinyGPSPlus location.age() zwraca wiek w ms od ostatniej aktualizacji
+    if (!_gps.location.isValid()) return false;
+    return (_gps.location.age() < 5000);
+}
+
+GpsDataPacket GpsModule::getData() {
+    GpsDataPacket packet = {0.0, 0.0, 0.0, 0.0, 0, 0.0, false};
+    
+    try {
+        if (hasFix()) {
+            packet.lat = _gps.location.lat();
+            packet.lon = _gps.location.lng();
+            packet.elevation = _gps.altitude.meters();
+            packet.speed = _gps.speed.kmph();
+            packet.satellites = _gps.satellites.value();
+            packet.hdop = _gps.hdop.hdop();
+            packet.valid = true;
+        } 
+    } catch (...) {
+        Serial.println("[GPS][ERR] Wyjątek podczas pobierania danych.");
+    }
+    
+    return packet;
+}
+
+bool GpsModule::isTimeAvailable() {
+    return _gps.date.isValid() && _gps.time.isValid();
+}
+
+uint64_t GpsModule::getUnixTime() {
+    try {
+        if (!isTimeAvailable()) return 0;
+
+        // Pobranie komponentów czasu
+        int year = _gps.date.year();
+        // Obsługa formatu roku (biblioteka zwykle zwraca pełny rok, ale dla pewności)
+        if (year < 100) year += 2000; 
+        
+        struct tm t = {0};
+        t.tm_year = year - 1900;
+        t.tm_mon  = _gps.date.month() - 1;
+        t.tm_mday = _gps.date.day();
+        t.tm_hour = _gps.time.hour();
+        t.tm_min  = _gps.time.minute();
+        t.tm_sec  = _gps.time.second();
+        t.tm_isdst = 0;
+
+        // Ustawienie strefy czasowej na UTC dla mktime
+        const char* oldtz = getenv("TZ");
+        setenv("TZ", "UTC0", 1);
+        tzset();
+
+        time_t secs = mktime(&t);
+
+        // Przywrócenie strefy (dla porządku w reszcie systemu)
+        if (oldtz) setenv("TZ", oldtz, 1);
+        else unsetenv("TZ");
+        tzset();
+
+        if (secs <= 0) return 0;
+
+        return (uint64_t)secs * 1000ULL;
+
+    } catch (...) {
+        Serial.println("[GPS][ERR] Błąd konwersji czasu.");
+        return 0;
+    }
+}
+
+void GpsModule::logStatus(bool gpsOk) {
+    if (gpsOk && hasFix()) {
+        Serial.printf("[GPS] Fix acquired! Lat: %f, Lon: %f\n", _gps.location.lat(), _gps.location.lng());
+    } else {
+        if (!gpsOk) {
+            Serial.println("[GPS] Error: Module not responding");
         } else {
-            newFrame = true;
+            Serial.println("[GPS] No fix acquired");
         }
     }
-
-    // Check for GPS data timeout
-    if (millis() - lastGpsDataTime > GPS_NO_DATA_TIMEOUT) {
-        static unsigned long lastTimeoutWarn = 0;
-        if (millis() - lastTimeoutWarn > 10000) {
-            Serial.println("[GPS] Brak danych na porcie (timeout).");
-            lastTimeoutWarn = millis();
-        }
-        lastGpsDataTime = millis();
-    }
-
-    // Update values if we have valid location and time data
-    if (gps.location.isValid() && gps.time.isValid()) {
-        currentLat = gps.location.lat();
-        currentLon = gps.location.lng();
-        currentElevation = gps.altitude.meters();
-        currentSpeed = gps.speed.kmph();
-
-        if (!fixAcquired) {
-            Serial.printf("[GPS] Fix OK: %.6f, %.6f | Sat: %u | HDOP: %.1f\n",
-                          currentLat,
-                          currentLon,
-                          gps.satellites.value(),
-                          gps.hdop.hdop());
-            fixAcquired = true;
-        }
-        return true;
-    }
-
-    return false;
 }
-
-bool gpsHasFix() {
-    // Return true only if we acquired a fix. Avoid false positives after timeout.
-    return fixAcquired;
-}
-
-void getGpsData(double &lat, double &lon, double &elevation, double &speed) {
-    lat = currentLat;
-    lon = currentLon;
-    elevation = currentElevation;
-    speed = currentSpeed;
-}
-
-uint64_t gpsGetUnixMillis() {
-    // Require both date and time
-    if (!gps.date.isValid() || !gps.time.isValid()) return 0;
-
-    // Extract components
-    int year = gps.date.year();
-    if (year < 100) year += 2000; // handle two-digit year
-    int month = gps.date.month();
-    int day = gps.date.day();
-    int hour = gps.time.hour();
-    int minute = gps.time.minute();
-    int second = gps.time.second();
-
-    struct tm t;
-    t.tm_year = year - 1900;
-    t.tm_mon = month - 1;
-    t.tm_mday = day;
-    t.tm_hour = hour;
-    t.tm_min = minute;
-    t.tm_sec = second;
-    t.tm_isdst = 0;
-
-    // Ensure mktime interprets struct tm as UTC by setting TZ to UTC temporarily
-    // Save old TZ if present
-    const char* oldtz = getenv("TZ");
-    bool hadOldTZ = (oldtz != NULL);
-    if (!hadOldTZ) oldtz = "";
-    setenv("TZ", "UTC0", 1);
-    tzset();
-
-    time_t secs = mktime(&t);
-
-    // Restore TZ
-    if (hadOldTZ) setenv("TZ", oldtz, 1);
-    else unsetenv("TZ");
-    tzset();
-
-    if (secs <= 0) return 0;
-
-    uint64_t ms = (uint64_t)secs * 1000ULL;
-    // NMEA provides second precision; milliseconds set to zero
-    return ms;
-}
-
-// Return true if GPS currently provides valid date and time
-bool gpsTimeAvailable() {
-    return gps.date.isValid() && gps.time.isValid();
-}
-
