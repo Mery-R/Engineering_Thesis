@@ -107,12 +107,8 @@ void handleGPSData() {
         return;
     }
 
-    String data = "";
-    while (file.available()) {
-        data += (char)file.read();
-    }
+    server.streamFile(file, "application/json");
     file.close();
-    server.send(200, "text/plain", data);
 }
 
 void startWebServer(uint16_t port) {

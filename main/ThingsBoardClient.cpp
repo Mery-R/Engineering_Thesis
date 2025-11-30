@@ -113,51 +113,14 @@ int ThingsBoardClient::sendBatchDirect(JsonArray &batch) {
         }
 
         if (_mqttClient.publish("v1/devices/me/telemetry", payload.c_str())) {
-            Serial.printf("[TB] Sent %d records directly from buffer\n", batch.size());
+            //Serial.printf("[TB] Sent %d records directly from buffer\n", batch.size());
             return batch.size();
         } else {
-            Serial.println("[TB][ERR] Direct publish failed");
+            Serial.println("[TB][ERR] Publish failed");
             return 0;
         }
     } catch (...) {
         Serial.println("[TB][ERR] Exception during sendBatchDirect");
-        return 0;
-    }
-}
-
-// -------------------
-// Wysyła rekordy z SD które mają tb_sent=false
-int ThingsBoardClient::sendUnsent(SdModule &sdModule, int maxItems) {
-    // Use JsonDocument for automatic memory management
-    JsonDocument doc;
-    JsonArray batch = doc.to<JsonArray>();
-
-    int count = sdModule.readBatch(batch, maxItems, true); // true = only unsent
-    if (count == 0) return 0;
-
-    formatTelemetry(batch);
-
-    try {
-        String payload;
-        serializeJson(batch, payload);
-        Serial.printf("[TB][DBG] sendBatch bytes=%d items=%d\n", (int)payload.length(), batch.size());
-        Serial.println(payload); // albo limituj: payload.substring(0,512)
-
-        if (!_mqttClient.connected() && !connect()) {
-            Serial.println("[TB][ERR] MQTT not connected");
-            return 0;
-        }
-
-        if (_mqttClient.publish("v1/devices/me/telemetry", payload.c_str())) {
-            Serial.printf("[TB] Sent %d unsent records from SD\n", count);
-            sdModule.markBatchAsSent(batch);
-            return count;
-        } else {
-            Serial.println("[TB][ERR] Unsent publish failed");
-            return 0;
-        }
-    } catch (...) {
-        Serial.println("[TB][ERR] Exception during sendUnsent");
         return 0;
     }
 }

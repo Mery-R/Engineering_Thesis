@@ -74,8 +74,12 @@ const char* MQTT_PASSWORD  = "8erz5sxd48lm797nr4ch";    // Password for ThingsBo
 const unsigned long sdSendInterval = 100; // Time in ms between SD sends
 
 // Ring buffer settings
-const int RINGBUFFER_CAPACITY = 4; // Size of the ring buffer
+const int RINGBUFFER_CAPACITY = 60; // Size of the ring buffer
 const int BATCH_SIZE = 2; // Number of records that trigger SD write
+const int MIN_BATCH_SIZE = 2; // Minimum number of records to send
+
+// Time sync setting
+const bool REQUIRE_VALID_TIME = true; // Set to true to wait for time sync before saving data
 
 
 
@@ -119,7 +123,7 @@ TaskHandle_t buttonTaskHandle = NULL;
 TaskHandle_t goToSleepTaskHandle = NULL;
 TaskHandle_t tempModuleTaskHandle = NULL;
 TaskHandle_t gpsModuleTaskHandle = NULL;
-TaskHandle_t sdModuleTaskHandle = NULL;
+// TaskHandle_t sdModuleTaskHandle = NULL; // Removed
 TaskHandle_t thingsboardTaskHandle = NULL;
 TaskHandle_t wifiTaskHandle = NULL;
 
@@ -164,6 +168,12 @@ void rpcForceCallback(bool forced) {
 void CoordinatorTask(void* pvParameters) {
     for (;;) {
         // Prepare timestamp
+        if (!TimeManager::isSynchronized() && REQUIRE_VALID_TIME) {
+            Serial.println("[COORD] Waiting for time sync...");
+            if (wifiTaskHandle) xTaskNotifyGive(wifiTaskHandle);
+            vTaskDelay(pdMS_TO_TICKS(Delay_MAIN));
+            continue;
+        }
         uint64_t now = TimeManager::getTimestampMs();
         xSemaphoreTake(dataSem, portMAX_DELAY);
         data.timestamp = now;
@@ -185,13 +195,18 @@ void CoordinatorTask(void* pvParameters) {
         SensorData snapshot = data;
         xSemaphoreGive(dataSem);
 
-        if (!ringBuffer.push(snapshot)) {
-            Serial.println("[COORD] RingBuffer full, dropping snapshot");
-        }
+        // Check if time is synchronized before storing data
+        if (!TimeManager::isSynchronized()) {
+            Serial.println("[COORD] Waiting for time sync... Data not saved.");
+        } else {
+            if (!ringBuffer.push(snapshot)) {
+                Serial.println("[COORD] RingBuffer full, dropping snapshot");
+            }
 
-        // If enough items accumulated, notify SD task to persist
-        if (ringBuffer.size() >= BATCH_SIZE && sdModuleTaskHandle) {
-            xTaskNotifyGive(sdModuleTaskHandle);
+            // Notify TB task to process data
+            if (thingsboardTaskHandle) {
+                xTaskNotifyGive(thingsboardTaskHandle);
+            }
         }
 
         vTaskDelay(pdMS_TO_TICKS(Delay_MAIN));
@@ -330,72 +345,13 @@ void TaskTemp(void* pvParameters){
     }
 }
 
-// --- TASK: SD Logging ---
-void TaskSD(void* pvParameters){
-    SensorData batch[BATCH_SIZE];
-    for(;;){
-        // Wait until notified to process (either normal batch or forced flush via sdForcedFlag)
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-        bool forced = false;
-        if (sdForcedFlag) {
-            forced = true;
-            sdForcedFlag = false;
-        }
-
-        int count = 0;
-        // If not forced, only pop when at least BATCH_SIZE available
-        if (!forced) {
-            if (ringBuffer.size() < BATCH_SIZE) {
-                continue;
-            }
-        } else {
-            // If forced but empty, we still need to acknowledge if sleep requested
-            if (ringBuffer.size() == 0) {
-                 if (goToSleepRequested && goToSleepTaskHandle) {
-                     xTaskNotifyGive(goToSleepTaskHandle);
-                 }
-                 continue;
-            }
-        }
-
-        if (forced || ringBuffer.size() >= BATCH_SIZE){
-            JsonDocument doc;
-            JsonArray arr = doc.to<JsonArray>();
-            
-            count = ringBuffer.popBatch(batch, BATCH_SIZE);
-            
-            if (count > 0) {
-                bool ok = sdModule.appendBatch(batch, count);
-
-                if(!ok){
-                    digitalWrite(LED_SD, LOW);
-                    Serial.println("[SD][ERR] Append failed!");
-                    xSemaphoreTake(dataSem, portMAX_DELAY);
-                    data.error_code |= ERR_SD_FAIL;
-                    xSemaphoreGive(dataSem);
-                } else {
-                    digitalWrite(LED_SD, HIGH);
-                    Serial.printf("[SD] Appended %d records\n", count);
-                    // notify TB task that SD has new data
-                    if (thingsboardTaskHandle) xTaskNotifyGive(thingsboardTaskHandle);
-                    
-                    // If forced (sleep), notify sleep task
-                    if (forced && goToSleepRequested && goToSleepTaskHandle) {
-                        xTaskNotifyGive(goToSleepTaskHandle);
-                    }
-                }
-            }
-        }
-    }
-}
-
-// --- TASK: ThingsBoard ---
+// --- TASK: ThingsBoard (and SD Logging) ---
 void TaskTB(void* pvParameters){
+    SensorData batch[BATCH_SIZE];
+    
     for(;;){
         bool forced = false;
 
-        // Sprawdzenie notyfikacji lub forced send
         // Wait for notification OR timeout (1s) to check for offline data
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
 
@@ -404,51 +360,102 @@ void TaskTB(void* pvParameters){
             tbForcedFlag = false;
         }
 
-        if (WiFi.status() == WL_CONNECTED) {
+        // 1. Process RingBuffer (RAM)
+        // We process as long as we have data or if forced
+        while (ringBuffer.size() >= MIN_BATCH_SIZE) {
+            int count = ringBuffer.popBatch(batch, BATCH_SIZE); // Pop up to BATCH_SIZE
+            if (count == 0) break;
+
+            bool sent = false;
+
+            // Try to send via MQTT if connected
+            if (WiFi.status() == WL_CONNECTED) {
+                if (!tbClient.isConnected()) tbClient.connect();
+                
+                if (tbClient.isConnected()) {
+                    JsonDocument doc;
+                    JsonArray arr = doc.to<JsonArray>();
+                    for (int i = 0; i < count; ++i) {
+                        JsonObject o = arr.createNestedObject();
+                        sensorDataToJson(batch[i], o);
+                    }
+                    if (tbClient.sendBatchDirect(arr)) {
+                        sent = true;
+                        Serial.printf("[TB] Sent %d records directly from buffer\n", count);
+                    }
+                }
+            }
+
+            // Update tb_sent flag in batch
+            for (int i = 0; i < count; ++i) {
+                batch[i].tb_sent = sent;
+            }
+
+            // Always save to Archive
+            if (sdModule.checkAndRemount()){
+                // Save to Archive always
+                sdModule.logToArchive(batch, count);
+                // If send failed, save also to Pending
+                if (!sent) {
+                    sdModule.logToPending(batch, count);
+                }
+            } else {
+                Serial.println("[TB] SD not ready, cannot archive/pending!");
+            }
+        }
+
+        // 2. Idle State Handling: Process Pending File
+        // Only if RingBuffer is empty AND WiFi is connected
+        if (ringBuffer.size() == 0 && WiFi.status() == WL_CONNECTED) {
             if (!tbClient.isConnected()) tbClient.connect();
 
             if (tbClient.isConnected()) {
-                unsigned long now = millis();
+                // Check if pending file exists/has data
+                // We read in chunks.
+                size_t offset = 0;
+                bool allSent = true;
+                bool hasPending = false;
 
-                // 1. Wysyłka z ring buffer jeśli pełny lub forced
-                if (forced || ringBuffer.size() >= BATCH_SIZE) {
-                    SensorData batch[BATCH_SIZE];
-                    int count = ringBuffer.popBatch(batch, BATCH_SIZE);
-                    if (count > 0) {
-                        // Use JsonDocument for automatic memory management
-                        JsonDocument doc;
-                        JsonArray arr = doc.to<JsonArray>();
-                        for (int i = 0; i < count; ++i) {
-                            JsonObject o = arr.createNestedObject();
-                            sensorDataToJson(batch[i], o);
-                        }
-                        if (tbClient.sendBatchDirect(arr)){
-                            Serial.printf("[TB] Sent %d records from RingBuffer\n", count);
-                        } else {
-                            Serial.println("[TB][ERR] Failed to send batch from RingBuffer");
-                        }
+                while (true) {
+                    JsonDocument doc;
+                    JsonArray arr = doc.to<JsonArray>();
+                    
+                    // Read a batch from pending
+                    int readCount = sdModule.readPendingBatch(arr, BATCH_SIZE, offset);
+                    
+                    if (readCount == 0) {
+                        // End of file or empty
+                        break;
                     }
+                    
+                    hasPending = true;
+
+                    // Try to send
+                    if (!tbClient.sendBatchDirect(arr)) {
+                        allSent = false;
+                        Serial.printf("[TB] FAILED to send %d records from Pending\n", readCount);
+                        break;
+                    }
+                    Serial.printf("[TB] SUCCESS: Sent %d records from Pending\n", readCount);
+                    
+                    // If sent, continue to next batch
+                    vTaskDelay(2000); // Small delay to yield
                 }
 
-                // 2. Wysyłka danych z SD jeśli są niewysłane, co sdSendInterval
-                if (now - lastSDSend >= sdSendInterval) {
-                    if (tbClient.sendUnsent(sdModule, BATCH_SIZE) > 0) {
-                        lastSDSend = now;
-                    }
+                // If we had pending data and ALL were sent successfully, clear the file
+                if (hasPending && allSent) {
+                    sdModule.clearPending();
                 }
             }
         }
 
-        // Sleep task
+        // Sleep task acknowledgment
         if (goToSleepRequested && forced) {
             goToSleepRequested = false;
             xTaskNotifyGive(goToSleepTaskHandle);
         }
-
     }
 }
-
-
 
 // ButtonTask: waits for ISR notification, debounces and signals GoToSleepTask via notification
 void ButtonTask(void* pvParameters) {
@@ -491,23 +498,16 @@ void GoToSleepTask(void* pvParameters) {
             sdForcedFlag = true;
             tbForcedFlag = true;
             goToSleepRequested = true; // Set global flag so tasks know to notify back
-            if (sdModuleTaskHandle) xTaskNotifyGive(sdModuleTaskHandle);
+            
+            // Notify TB Task (which now handles SD as well)
             if (thingsboardTaskHandle) xTaskNotifyGive(thingsboardTaskHandle);
 
-            // --- Czekaj na zakończenie obu operacji (max 5s na każde) ---
-            if (sdModuleTaskHandle) {
-                if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000)) == 0) {
-                    Serial.println("[SLEEP TASK] Timeout waiting for SD flush.");
-                } else {
-                    Serial.println("[SLEEP TASK] SD flush completed.");
-                }
-            }
-
+            // --- Czekaj na zakończenie operacji (max 5s) ---
             if (thingsboardTaskHandle) {
                 if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5000)) == 0) {
-                    Serial.println("[SLEEP TASK] Timeout waiting for TB send.");
+                    Serial.println("[SLEEP TASK] Timeout waiting for TB/SD flush.");
                 } else {
-                    Serial.println("[SLEEP TASK] TB send completed.");
+                    Serial.println("[SLEEP TASK] TB/SD flush completed.");
                 }
             }
 
@@ -519,10 +519,6 @@ void GoToSleepTask(void* pvParameters) {
         }
     }
 }
-
-
-
-
 
 // --- SETUP ---
 void setup(){
@@ -570,7 +566,7 @@ void setup(){
     xTaskCreate(CoordinatorTask, "Coordinator", 8192, NULL, 2, &coordinatorTaskHandle);
     xTaskCreate(TaskGPS,  "GPSTask",  8192, NULL, 1,  &gpsModuleTaskHandle);
     xTaskCreate(TaskTemp, "TempTask", 8192, NULL, 1,  &tempModuleTaskHandle);
-    xTaskCreate(TaskSD,   "SDTask",   16384, NULL, 1,  &sdModuleTaskHandle);
+    // xTaskCreate(TaskSD,   "SDTask",   16384, NULL, 1,  &sdModuleTaskHandle); // Removed
     xTaskCreate(TaskTB,   "TBTask",   16384, NULL, 1,  &thingsboardTaskHandle);
     xTaskCreate(TaskWiFi, "WiFiTask", 4096, NULL, 1, &wifiTaskHandle);
     xTaskCreate(ButtonTask, "ButtonTask", 4096, NULL, 1, &buttonTaskHandle);

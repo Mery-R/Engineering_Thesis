@@ -4,6 +4,7 @@
 #include <SD.h>
 #include "SensorData.h"
 #include <ArduinoJson.h>
+#include "TimeManager.h"
 
 class SdModule {
 public:
@@ -11,26 +12,35 @@ public:
 
     bool begin();
 
-    // Appends a batch of records in JSONLines format
-    bool appendBatch(const SensorData* batch, int count);
+    // Logs a batch to the current archive file (rotates if needed)
+    bool logToArchive(const SensorData* batch, int count);
 
-    // Checks file size and rotates if necessary
-    void checkFileSizeAndRotate();
+    // Logs a batch to the pending file (for failed sends)
+    bool logToPending(const SensorData* batch, int count);
 
-    // Reads a batch of records from the file (parsing JSONLines)
-    // NOTE: This needs to be implemented to support ThingsBoardClient
-    int readBatch(JsonArray &outArray, int maxItems, bool onlyNotSent = true);
+    // Logs a JSON array to the archive (used when moving data from pending to archive)
+    bool logJsonToArchive(const JsonArray& array);
 
-    // Marks records as sent (in JSONLines, this might require rewriting the file or appending a "sent" log)
-    // For now, we might need a placeholder or a different strategy for "mark as sent" with append-only files.
-    void markBatchAsSent(JsonArray &sentRecords);
+    // Reads a batch from the pending file starting at offset
+    int readPendingBatch(JsonArray &outArray, int maxItems, size_t &offset);
 
-    bool clear();
+    // Clears the pending file (after successful retry)
+    bool clearPending();
+
+    bool isReady() const;
+
+    // Checks if SD card is present and attempts to remount if not
+    bool checkAndRemount();
 
 private:
     int _csPin;
-    const char* _filename = "/data.jsonl";
-    const size_t MAX_FILE_SIZE = 1024 * 1024; // 1MB
+    String _currentArchiveFilename;
+    const char* _pendingFilename = "/pending.jsonl";
+    const size_t MAX_FILE_SIZE = 500 * 1024; // 500KB
+    bool _initialized = false;
 
-    void rotateFile();
+    void rotateArchiveFile();
+    String generateArchiveFilename();
+    void checkArchiveSizeAndRotate();
+    String getLatestArchiveFilename();
 };

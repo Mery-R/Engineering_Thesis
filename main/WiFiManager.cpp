@@ -68,7 +68,6 @@ bool WiFiManager::connectToBest() {
 
     const WiFiConfig* cfg = chooseBestAP();
     if (!cfg) {
-        Serial.println("[WiFi] No known AP found");
         return false;
     }
 
