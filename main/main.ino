@@ -6,7 +6,7 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include "SensorData.h"
-#include "RingBuffer.h"
+
 #include "ThingsBoardClient.h"
 #include "SdModule.h"
 #include "WiFiManager.h"
@@ -135,7 +135,7 @@ SdModule sdModule(SD_CS_PIN);
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature tempSensor(&oneWire);
 WiFiManager wifiManager(WIFI_CONFIG);
-RingBuffer<SensorData> ringBuffer(RINGBUFFER_CAPACITY);
+QueueHandle_t dataQueue;
 GpsModule gpsModule(GPS_RX_PIN, GPS_TX_PIN, GPS_BAUDRATE);
 ThingsBoardClient tbClient(THINGSBOARD_SERVER, THINGSBOARD_PORT, MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD);
 
@@ -185,9 +185,10 @@ void CoordinatorTask(void* pvParameters) {
         if (tempModuleTaskHandle) xTaskNotifyGive(tempModuleTaskHandle);
 
         // Wait for both to finish (expect two notifications from gps/temp)
+        // Timeout increased to 50s to accommodate GPS cold start (45s)
         int done = 0;
         for (int i = 0; i < 2; ++i) {
-            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(6000)) > 0) done++;
+            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(50000)) > 0) done++;
         }
 
         // Build a snapshot and push to ring buffer
@@ -199,8 +200,8 @@ void CoordinatorTask(void* pvParameters) {
         if (!TimeManager::isSynchronized()) {
             Serial.println("[COORD] Waiting for time sync... Data not saved.");
         } else {
-            if (!ringBuffer.push(snapshot)) {
-                Serial.println("[COORD] RingBuffer full, dropping snapshot");
+            if (xQueueSend(dataQueue, &snapshot, 0) != pdTRUE) {
+                Serial.println("[COORD] Queue full, dropping snapshot");
             }
 
             // Notify TB task to process data
@@ -277,22 +278,42 @@ void WiFiEventHandler(void* arg, esp_event_base_t base, int32_t id, void* data)
 
 // --- TASK: GPS ---
 void TaskGPS(void* pvParameters){
+    static bool firstRun = true;
+
     for(;;){
         // wait until coordinator notifies this task
         if (ulTaskNotifyTake(pdTRUE, portMAX_DELAY) > 0) {
             gpsModule.wake();
-            bool gpsOk = false;
+            bool hasFix = false;
+            bool gotPacket = false;
             unsigned long start = millis();
-
-            while(millis()-start < 5000) {
-              gpsOk = gpsModule.process() || gpsOk;
-              vTaskDelay(5);
+            
+            // First run: 45s timeout (cold start). Subsequent runs: 5s (hot start)
+            unsigned long timeout = firstRun ? 45000 : 5000;
+            if (firstRun) {
+                Serial.println("[GPS] First run: Waiting up to 45s for fix...");
             }
+
+            // Wait for fix or timeout
+            while(millis() - start < timeout) {
+                if (gpsModule.process()) {
+                    gotPacket = true;
+                }
+                
+                if (gpsModule.hasFix()) {
+                    hasFix = true;
+                    break; // Exit early if fix acquired
+                }
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+            
+            // Clear firstRun flag after the attempt
+            if (firstRun) firstRun = false;
 
             uint64_t now = TimeManager::getTimestampMs();
 
             xSemaphoreTake(dataSem, portMAX_DELAY);
-            if(gpsOk && gpsModule.hasFix()){
+            if(hasFix){
                 TimeManager::updateFromGps(gpsModule.getUnixTime());
                 GpsDataPacket packet = gpsModule.getData();
                 data.lat = packet.lat;
@@ -302,13 +323,15 @@ void TaskGPS(void* pvParameters){
                 data.last_gps_fix_timestamp = now;
                 data.error_code &= ~ERR_GPS_NO_FIX;
                 digitalWrite(LED_GPS, HIGH);
+                Serial.println("[GPS] Fix acquired!");
             } else {
                 data.error_code |= ERR_GPS_NO_FIX;
                 digitalWrite(LED_GPS, LOW);
+                Serial.printf("[GPS] Timeout: No fix acquired within %lu ms.\n", timeout);
             }
             
             // Log status using the module's method
-            gpsModule.logStatus(gpsOk);
+            gpsModule.logStatus(gotPacket);
 
             xSemaphoreGive(dataSem);
             
@@ -360,10 +383,19 @@ void TaskTB(void* pvParameters){
             tbForcedFlag = false;
         }
 
-        // 1. Process RingBuffer (RAM)
+        // 1. Process Queue (RAM)
         // We process as long as we have data or if forced
-        while (ringBuffer.size() >= MIN_BATCH_SIZE) {
-            int count = ringBuffer.popBatch(batch, BATCH_SIZE); // Pop up to BATCH_SIZE
+        while (uxQueueMessagesWaiting(dataQueue) >= MIN_BATCH_SIZE) {
+            int count = 0;
+            // Pop up to BATCH_SIZE
+            while (count < BATCH_SIZE && uxQueueMessagesWaiting(dataQueue) > 0) {
+                 if (xQueueReceive(dataQueue, &batch[count], 0) == pdTRUE) {
+                      count++;
+                 } else {
+                      break;
+                 }
+            }
+
             if (count == 0) break;
 
             bool sent = false;
@@ -405,8 +437,8 @@ void TaskTB(void* pvParameters){
         }
 
         // 2. Idle State Handling: Process Pending File
-        // Only if RingBuffer is empty AND WiFi is connected
-        if (ringBuffer.size() == 0 && WiFi.status() == WL_CONNECTED) {
+        // Only if Queue is empty AND WiFi is connected
+        if (uxQueueMessagesWaiting(dataQueue) == 0 && WiFi.status() == WL_CONNECTED) {
             if (!tbClient.isConnected()) tbClient.connect();
 
             if (tbClient.isConnected()) {
@@ -540,6 +572,11 @@ void setup(){
     sdSignal = xSemaphoreCreateBinary();
     wifiEventSem = xSemaphoreCreateBinary();
     dataSem = xSemaphoreCreateMutex();
+    
+    dataQueue = xQueueCreate(RINGBUFFER_CAPACITY, sizeof(SensorData));
+    if (dataQueue == NULL) {
+        Serial.println("[SETUP] Failed to create dataQueue!");
+    }
 
     if (sdModule.begin()){
         digitalWrite(LED_SD, HIGH);
