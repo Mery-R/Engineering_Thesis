@@ -23,15 +23,15 @@ struct SensorData {
 };
 
 inline void sensorDataToJson(const SensorData &data, JsonObject &out) {
+    out["timestamp"] = data.timestamp;
+    out["time_source"] = data.timestamp_time_source;
+    out["tb_sent"] = data.tb_sent;
     out["lat"] = data.lat;
     out["lon"] = data.lon;
     out["elevation"] = data.elevation;
     out["speed"] = data.speed;
-    out["temp"] = data.temp;
-    out["timestamp"] = data.timestamp;
-    out["time_source"] = data.timestamp_time_source;
     out["last_gps_fix_timestamp"] = data.last_gps_fix_timestamp;
+    out["temp"] = data.temp;
     out["last_temp_read_timestamp"] = data.last_temp_read_timestamp;
     out["error_code"] = data.error_code;
-    out["tb_sent"] = data.tb_sent;
 }
