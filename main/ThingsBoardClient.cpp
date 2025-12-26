@@ -12,7 +12,18 @@ ThingsBoardClient::ThingsBoardClient(const char* server, int port,
       _username(username),
       _password(password),
       _mqttClient(_wifiClient)
-{}
+{
+    // Save instance for static callback
+    _instance = this;
+}
+
+ThingsBoardClient* ThingsBoardClient::_instance = nullptr;
+
+void ThingsBoardClient::onMqttMessage(char* topic, byte* payload, unsigned int length) {
+    if (_instance) {
+        _instance->processMessage(topic, payload, length);
+    }
+}
 
 
 bool ThingsBoardClient::connect() {
@@ -29,7 +40,12 @@ bool ThingsBoardClient::connect() {
         if (_mqttClient.connect(_clientId, _username, _password)) {
             Serial.println("[TB] Connected via MQTT!");
             Serial.printf("[TB] MQTT Buffer Size: %d\n", _mqttClient.getBufferSize());
-             _mqttClient.subscribe("v1/devices/me/rpc/request/+");
+            
+            _mqttClient.setCallback(onMqttMessage);
+            _mqttClient.subscribe("v1/devices/me/rpc/request/+");
+            _mqttClient.subscribe("v1/devices/me/attributes");
+            _mqttClient.subscribe("v1/devices/me/attributes/response/+");
+            
             return true;
         } else {
             Serial.printf("[TB] MQTT connection failed. State: %d\n", _mqttClient.state());
@@ -50,6 +66,77 @@ void ThingsBoardClient::loop() {
 
 void ThingsBoardClient::setRpcCallback(void (*callback)(bool forced)) {
     _rpcCallback = callback;
+}
+
+void ThingsBoardClient::setAttributesCallback(void (*callback)(const JsonObject &data)) {
+    _attributesCallback = callback;
+}
+
+void ThingsBoardClient::requestSharedAttributes() {
+    if (!_mqttClient.connected()) return;
+    // Request specific shared keys
+    const char* payload = "{\"sharedKeys\":\"BATCH_SIZE,Delay_MAIN,Delay_WIFI,MIN_BATCH_SIZE,REQUIRE_VALID_TIME,BUFFER_CAPACITY\"}";
+    _mqttClient.publish("v1/devices/me/attributes/request/1", payload);
+    Serial.println("[TB] Requested shared attributes");
+}
+
+void ThingsBoardClient::processMessage(char* topic, byte* payload, unsigned int length) {
+    // Basic check to avoid buffer overflow
+    if (length > 4096) return;
+    
+    // Create a temporary buffer and copy payload
+    // (ArduinoJson needs a writable buffer or a String/const char*)
+    // We can just parse it directly if we cast nicely or use a transient buffer
+    // But payload is byte*, treating as string requires null termination if not careful
+    // Safest is to use JsonDocument with the pointer and length
+    
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload, length);
+
+    if (error) {
+        Serial.print("[TB] deserializeJson() failed: ");
+        Serial.println(error.c_str());
+        return;
+    }
+
+    String topicStr = String(topic);
+
+    // 1. Attributes (Push or Response)
+    // Push: v1/devices/me/attributes
+    // Response: v1/devices/me/attributes/response/+
+    if (topicStr.startsWith("v1/devices/me/attributes")) {
+        JsonObject data;
+        if (doc.containsKey("shared")) {
+            data = doc["shared"];
+        } else {
+            data = doc.as<JsonObject>();
+        }
+
+        if (_attributesCallback) {
+            _attributesCallback(data);
+        }
+    }
+
+    // 2. RPC
+    // Topic: v1/devices/me/rpc/request/{id}
+    else if (topicStr.startsWith("v1/devices/me/rpc/request/")) {
+        const char* method = doc["method"];
+        // Check for 'force' method or similar logic
+        // User logic seemed to be just a generic "force" toggle, 
+        // maybe looking for method "forceSend" or params "forced": true ?
+        // Going by previous implementation hint: "rpcForceCallback(bool forced)"
+        
+        bool forced = false;
+        if (doc.containsKey("params")) {
+             if (doc["params"].is<bool>()) forced = doc["params"];
+             else if (doc["params"].is<JsonObject>() && doc["params"].containsKey("forced")) forced = doc["params"]["forced"];
+        }
+        // Also check method name if needed
+        
+        if (_rpcCallback) {
+            _rpcCallback(forced);
+        }
+    }
 }
 
 // Helper function to format telemetry data

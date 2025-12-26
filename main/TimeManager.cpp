@@ -7,6 +7,7 @@
 volatile uint64_t TimeManager::baseUnixMs = 0;
 volatile uint32_t TimeManager::baseMillis = 0;
 volatile bool TimeManager::timeValid = false;
+volatile uint32_t TimeManager::lastPpsMillis = 0;
 TimeSource TimeManager::currentSource = TIME_LOCAL;
 
 const char* TimeManager::ntpServer1 = nullptr;
@@ -20,8 +21,26 @@ const uint64_t TimeManager::MIN_VALID_UNIX_MS = 1763651027000ULL;
 
 // --- begin ---
 void TimeManager::begin(int PPS_PIN) {
-    if (PPS_PIN >= 0) pinMode(PPS_PIN, INPUT);
-    // tu możesz attachInterrupt(PPS_PIN, ...) jeśli chcesz PPS
+    if (PPS_PIN >= 0) {
+        pinMode(PPS_PIN, INPUT);
+        attachInterrupt(digitalPinToInterrupt(PPS_PIN), handlePPS, RISING);
+    }
+}
+
+void IRAM_ATTR TimeManager::handlePPS() {
+    uint32_t now = millis();
+    lastPpsMillis = now;
+
+    // Optional: If we are already valid/synced, we can increment the second counter here
+    // for smoother transitions between GPS updates.
+    if (timeValid && baseUnixMs >= MIN_VALID_UNIX_MS) {
+        // If we are roughly 1 second from last baseMillis, increment
+        uint32_t delta = now - baseMillis;
+        if (delta > 900 && delta < 1100) {
+             baseUnixMs += 1000;
+             baseMillis = now;
+        }
+    }
 }
 
 // --- enable NTP backup ---
@@ -41,8 +60,16 @@ void TimeManager::updateFromGps(uint64_t gpsUnixMs) {
         return;
     }
 
-    baseUnixMs = gpsUnixMs;
-    baseMillis = millis();
+    // If PPS was received recently (within last 900ms), align to it
+    // Usually GPS data comes 100-500ms after PPS.
+    if (millis() - lastPpsMillis < 900) {
+         baseUnixMs = gpsUnixMs;
+         baseMillis = lastPpsMillis; 
+    } else {
+         baseUnixMs = gpsUnixMs;
+         baseMillis = millis();
+    }
+    
     timeValid = true;
     currentSource = TIME_GPS;
 }
@@ -75,6 +102,10 @@ uint64_t TimeManager::getTimestampMs() {
     // 2. NTP jeśli dostępne
     uint64_t ntpMs = getNtpTimeMs();
     if (ntpMs > 0) {
+        // Jeśli to pierwszy raz, zapisz jako bazę
+        if (!timeValid) {
+            syncTime(ntpMs);
+        }
         currentSource = TIME_WIFI;
         return ntpMs;
     }
@@ -100,7 +131,7 @@ bool TimeManager::isSynchronized() {
 
 // --- getNtpTimeMs ---
 uint64_t TimeManager::getNtpTimeMs() {
-    if (!ntpEnabled || WiFi.status() != WL_CONNECTED) return 0;
+    if (!ntpEnabled) return 0;
     time_t t = time(nullptr);
     if (t > 100000) return ((uint64_t)t) * 1000ULL;
     return 0;

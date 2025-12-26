@@ -135,6 +135,7 @@ bool SdModule::logToArchive(const SensorData* batch, int count) {
         file = SD.open(_currentArchiveFilename, FILE_APPEND);
         if (!file) {
             Serial.println("[SD] Failed to open archive file: " + _currentArchiveFilename);
+            _initialized = false;
             return false;
         }
     }
@@ -146,6 +147,8 @@ bool SdModule::logToArchive(const SensorData* batch, int count) {
         
         if (serializeJson(doc, file) == 0) {
             Serial.println("[SD] Failed to write record to archive");
+            // Mark as failed so we retry mount next time
+            _initialized = false;
         }
         file.println(); 
     }
@@ -198,6 +201,7 @@ bool SdModule::logJsonToArchive(const JsonArray& array) {
     for (JsonVariant v : array) {
         if (serializeJson(v, file) == 0) {
             Serial.println("[SD] Failed to write JSON record to archive");
+             _initialized = false;
         }
         file.println(); 
     }
@@ -211,6 +215,7 @@ bool SdModule::logToPending(const SensorData* batch, int count) {
     File file = SD.open(_pendingFilename, FILE_APPEND);
     if (!file) {
         Serial.println("[SD] Failed to open pending file");
+        _initialized = false;
         return false;
     }
 
@@ -223,6 +228,7 @@ bool SdModule::logToPending(const SensorData* batch, int count) {
         obj["tb_sent"] = false;
         if (serializeJson(doc, file) == 0) {
             Serial.println("[SD] Failed to write record to pending");
+            _initialized = false;
         }
         file.println(); 
     }
@@ -320,27 +326,48 @@ String SdModule::getLatestArchiveFilename() {
 }
 
 bool SdModule::checkAndRemount() {
+    // 1. Cooldown check to avoid spamming
+    if (millis() - _lastRetryTime < 2000) {
+        return _initialized; // Return current belief of state
+    }
+    _lastRetryTime = millis();
+
+    // 2. Physical check
     if (SD.cardType() == CARD_NONE) {
         Serial.println("[SD] Card not detected. Attempting remount...");
         SD.end();
         _initialized = false; 
+    }
 
-        if (SD.begin(_csPin)) {
-            Serial.println("[SD] Remount successful.");
-            _initialized = true;
-            // Re-check pending file existence just in case
-            if (!SD.exists(_pendingFilename)) {
-                 File p = SD.open(_pendingFilename, FILE_WRITE);
-                 if(p) p.close();
-            }
-            return true;
+    // 3. Functional Check (only if physically present)
+    if (_initialized) {
+        File root = SD.open("/", FILE_READ);
+        if (!root) {
+            Serial.println("[SD] Test open failed (FS corrupted or disconnected). Restarting...");
+            SD.end();
+            _initialized = false;
         } else {
-            Serial.println("[SD] Remount failed.");
-            return false;
+            root.close();
         }
     }
-    // If we are here, cardType is not NONE, so card is physically detected.
-    // However, we might want to ensure _initialized is true if it wasn't.
-    if (!_initialized) _initialized = true; 
+
+    // 4. Recovery / Initialization
+    if (!_initialized) {
+           if (SD.begin(_csPin)) {
+                Serial.println("[SD] Mount/Restart successful.");
+                _initialized = true;
+                
+                // Re-check pending file existence
+                if (!SD.exists(_pendingFilename)) {
+                     File p = SD.open(_pendingFilename, FILE_WRITE);
+                     if(p) p.close();
+                }
+                return true;
+           } else {
+                Serial.println("[SD] Mount failed.");
+                return false;
+           }
+    }
+
     return true;
 }

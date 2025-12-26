@@ -38,6 +38,7 @@ private:
     const char* _pendingFilename = "/pending.jsonl";
     const size_t MAX_FILE_SIZE = 500 * 1024; // 500KB
     bool _initialized = false;
+    unsigned long _lastRetryTime = 0;
 
     void rotateArchiveFile();
     String generateArchiveFilename();

@@ -15,6 +15,8 @@ enum TimeSource {
 class TimeManager {
 public:
     static void begin(int PPS_PIN = -1);
+    
+    static void IRAM_ATTR handlePPS();
 
     static void syncTime(uint64_t unixMs);
     static void enableNtpBackup(const char* s1, const char* s2 = nullptr, const char* s3 = nullptr);
@@ -42,6 +44,8 @@ private:
 
     static uint64_t getNtpTimeMs();
     static const uint64_t MIN_VALID_UNIX_MS;
+    
+    static volatile uint32_t lastPpsMillis;
 };
 
 #endif

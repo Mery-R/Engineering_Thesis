@@ -13,6 +13,7 @@
 #include "WebServerModule.h"
 #include "TimeManager.h"
 #include "GpsModule.h"
+#include "CanModule.h"
 #include "esp_sleep.h"
 
 SET_TIME_BEFORE_STARTING_SKETCH_MS(5000);
@@ -42,9 +43,9 @@ const char* MQTT_PASSWORD  = "8erz5sxd48lm797nr4ch";    // Password for ThingsBo
 // -----------------------------------------------------
 
 // LED pinout
-#define LED_WiFi 25
-#define LED_GPS 26
-#define LED_SD 27
+#define LED_WiFi 25 // RED
+#define LED_GPS 26 // GREEN
+#define LED_SD 27 // BLUE
 
 // GPS pinout
 #define PPS_PIN 32
@@ -61,25 +62,27 @@ const char* MQTT_PASSWORD  = "8erz5sxd48lm797nr4ch";    // Password for ThingsBo
 // Wake button pinout
 #define WAKE_BUTTON_PIN 33
 
+// CAN pinout
+#define CAN_RX_PIN 21
+#define CAN_TX_PIN 22
+
 // -----------------------------------------------------
 // -------------------- Settings -----------------------
 // -----------------------------------------------------
 
 // Delays 
-#define Delay_MAIN 15000 // Delay in milliseconds for main loop
-#define Delay_SD 15000 // Delay in milliseconds for SD card operations
-#define Delay_WIFI 30000 // Delay in milliseconds for WiFi operations
+// Delays (volatile for dynamic update)
+volatile int Delay_MAIN = 15000;
+volatile int Delay_WIFI = 30000;
 
-// SD card settings
-const unsigned long sdSendInterval = 100; // Time in ms between SD sends
-
-// Ring buffer settings
-const int RINGBUFFER_CAPACITY = 60; // Size of the ring buffer
-const int BATCH_SIZE = 2; // Number of records that trigger SD write
-const int MIN_BATCH_SIZE = 2; // Minimum number of records to send
+// Buffer settings (volatile)
+volatile int BUFFER_CAPACITY = 60;
+volatile int BATCH_SIZE = 2;
+volatile int MIN_BATCH_SIZE = 2;
+#define MAX_BATCH_SIZE 20
 
 // Time sync setting
-const bool REQUIRE_VALID_TIME = true; // Set to true to wait for time sync before saving data
+volatile bool REQUIRE_VALID_TIME = true;
 
 
 
@@ -123,9 +126,9 @@ TaskHandle_t buttonTaskHandle = NULL;
 TaskHandle_t goToSleepTaskHandle = NULL;
 TaskHandle_t tempModuleTaskHandle = NULL;
 TaskHandle_t gpsModuleTaskHandle = NULL;
-// TaskHandle_t sdModuleTaskHandle = NULL; // Removed
 TaskHandle_t thingsboardTaskHandle = NULL;
 TaskHandle_t wifiTaskHandle = NULL;
+TaskHandle_t canTaskHandle = NULL;
 
 // -----------------------------------------------------
 // -------------------- Modules ------------------------
@@ -137,6 +140,7 @@ DallasTemperature tempSensor(&oneWire);
 WiFiManager wifiManager(WIFI_CONFIG);
 QueueHandle_t dataQueue;
 GpsModule gpsModule(GPS_RX_PIN, GPS_TX_PIN, GPS_BAUDRATE);
+CanModule canModule(CAN_RX_PIN, CAN_TX_PIN);
 ThingsBoardClient tbClient(THINGSBOARD_SERVER, THINGSBOARD_PORT, MQTT_CLIENT_ID, MQTT_USERNAME, MQTT_PASSWORD);
 
 // -----------------------------------------------------
@@ -157,6 +161,36 @@ void rpcForceCallback(bool forced) {
         Serial.println("[RPC] Force send requested");
         tbForcedFlag = true;
         if (thingsboardTaskHandle) xTaskNotifyGive(thingsboardTaskHandle);
+    }
+}
+
+void attributesCallback(const JsonObject &data) {
+    Serial.println("[TB] Attributes updated");
+    if (data.containsKey("Delay_MAIN")) {
+        Delay_MAIN = data["Delay_MAIN"];
+        Serial.printf("Updated Delay_MAIN: %d\n", Delay_MAIN);
+    }
+    if (data.containsKey("Delay_WIFI")) {
+        Delay_WIFI = data["Delay_WIFI"];
+        Serial.printf("Updated Delay_WIFI: %d\n", Delay_WIFI);
+    }
+    if (data.containsKey("BATCH_SIZE")) {
+        int val = data["BATCH_SIZE"];
+        if (val > MAX_BATCH_SIZE) val = MAX_BATCH_SIZE;
+        BATCH_SIZE = val;
+        Serial.printf("Updated BATCH_SIZE: %d\n", BATCH_SIZE);
+    }
+    if (data.containsKey("MIN_BATCH_SIZE")) {
+        MIN_BATCH_SIZE = data["MIN_BATCH_SIZE"];
+        Serial.printf("Updated MIN_BATCH_SIZE: %d\n", MIN_BATCH_SIZE);
+    }
+    if (data.containsKey("BUFFER_CAPACITY")) {
+        BUFFER_CAPACITY = data["BUFFER_CAPACITY"];
+        Serial.printf("Updated BUFFER_CAPACITY (needs restart): %d\n", BUFFER_CAPACITY);
+    }
+    if (data.containsKey("REQUIRE_VALID_TIME")) {
+        REQUIRE_VALID_TIME = data["REQUIRE_VALID_TIME"];
+        Serial.printf("Updated REQUIRE_VALID_TIME: %d\n", (int)REQUIRE_VALID_TIME);
     }
 }
 
@@ -368,12 +402,43 @@ void TaskTemp(void* pvParameters){
     }
 }
 
+// --- TASK: CAN ---
+void TaskCAN(void* pvParameters) {
+    twai_message_t msg;
+    for (;;) {
+        if (canModule.getMessage(msg)) {
+            float speed = canModule.scaleSpeed(msg);
+            if (speed >= 0) {
+                xSemaphoreTake(dataSem, portMAX_DELAY);
+                data.can_speed = speed;
+                data.last_can_read_timestamp = TimeManager::getTimestampMs();
+                xSemaphoreGive(dataSem);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(10)); // Poll every 10ms
+    }
+}
+
 // --- TASK: ThingsBoard (and SD Logging) ---
 void TaskTB(void* pvParameters){
-    SensorData batch[BATCH_SIZE];
+    SensorData batch[MAX_BATCH_SIZE];
+    static unsigned long lastAttrRequest = 0;
     
     for(;;){
         bool forced = false;
+
+        // Process MQTT loop to handle attributes/RPC
+        if (WiFi.status() == WL_CONNECTED) {
+             if (tbClient.isConnected()) {
+                 tbClient.loop();
+                 
+                 // Periodic attributes request (every 5 mins)
+                 if (millis() - lastAttrRequest > 300000) {
+                     lastAttrRequest = millis();
+                     tbClient.requestSharedAttributes();
+                 }
+             }
+        }
 
         // Wait for notification OR timeout (1s) to check for offline data
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
@@ -387,8 +452,9 @@ void TaskTB(void* pvParameters){
         // We process as long as we have data or if forced
         while (uxQueueMessagesWaiting(dataQueue) >= MIN_BATCH_SIZE) {
             int count = 0;
-            // Pop up to BATCH_SIZE
-            while (count < BATCH_SIZE && uxQueueMessagesWaiting(dataQueue) > 0) {
+            // Pop up to BATCH_SIZE (clamped to MAX_BATCH_SIZE)
+            int effectiveBatchSize = (BATCH_SIZE < MAX_BATCH_SIZE) ? BATCH_SIZE : MAX_BATCH_SIZE;
+            while (count < effectiveBatchSize && uxQueueMessagesWaiting(dataQueue) > 0) {
                  if (xQueueReceive(dataQueue, &batch[count], 0) == pdTRUE) {
                       count++;
                  } else {
@@ -425,6 +491,7 @@ void TaskTB(void* pvParameters){
 
             // Always save to Archive
             if (sdModule.checkAndRemount()){
+                digitalWrite(LED_SD, HIGH);
                 // Save to Archive always
                 sdModule.logToArchive(batch, count);
                 // If send failed, save also to Pending
@@ -432,6 +499,7 @@ void TaskTB(void* pvParameters){
                     sdModule.logToPending(batch, count);
                 }
             } else {
+                digitalWrite(LED_SD, LOW);
                 Serial.println("[TB] SD not ready, cannot archive/pending!");
             }
         }
@@ -573,7 +641,7 @@ void setup(){
     wifiEventSem = xSemaphoreCreateBinary();
     dataSem = xSemaphoreCreateMutex();
     
-    dataQueue = xQueueCreate(RINGBUFFER_CAPACITY, sizeof(SensorData));
+    dataQueue = xQueueCreate(BUFFER_CAPACITY, sizeof(SensorData));
     if (dataQueue == NULL) {
         Serial.println("[SETUP] Failed to create dataQueue!");
     }
@@ -588,8 +656,15 @@ void setup(){
     wifiManager.begin();
 
     tbClient.setRpcCallback(rpcForceCallback);
+    tbClient.setAttributesCallback(attributesCallback);
 
     gpsModule.begin();
+
+    if (canModule.begin()) {
+        Serial.println("[CAN] Initialized successfully");
+    } else {
+        Serial.println("[CAN] Initialization failed");
+    }
 
     tempSensor.begin();
     Serial.println("[TEMP] DS18B20 initialized");
@@ -603,9 +678,9 @@ void setup(){
     xTaskCreate(CoordinatorTask, "Coordinator", 8192, NULL, 2, &coordinatorTaskHandle);
     xTaskCreate(TaskGPS,  "GPSTask",  8192, NULL, 1,  &gpsModuleTaskHandle);
     xTaskCreate(TaskTemp, "TempTask", 8192, NULL, 1,  &tempModuleTaskHandle);
-    // xTaskCreate(TaskSD,   "SDTask",   16384, NULL, 1,  &sdModuleTaskHandle); // Removed
     xTaskCreate(TaskTB,   "TBTask",   16384, NULL, 1,  &thingsboardTaskHandle);
     xTaskCreate(TaskWiFi, "WiFiTask", 4096, NULL, 1, &wifiTaskHandle);
+    xTaskCreate(TaskCAN,  "CanTask",  4096, NULL, 2, &canTaskHandle);
     xTaskCreate(ButtonTask, "ButtonTask", 4096, NULL, 1, &buttonTaskHandle);
     xTaskCreate(GoToSleepTask, "GoToSleep", 4096, NULL, 2, &goToSleepTaskHandle);
 
