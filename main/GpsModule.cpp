@@ -6,49 +6,41 @@ GpsModule::GpsModule(int rxPin, int txPin, long baudRate, int uartNr)
 }
 
 void GpsModule::begin() {
-    try {
-        Serial.print("[GPS] Inicjalizacja obiektu GpsModule ---> ");
-        _gpsSerial.begin(_baudRate, SERIAL_8N1, _rxPin, _txPin);
-        Serial.printf("Config: Baud=%ld, RX=%d, TX=%d ---> ", _baudRate, _rxPin, _txPin);
-        _lastFixTime = millis();
-        Serial.println("Inicjalizacja zakończona");
-    } catch (...) {
-        Serial.println("[GPS][CRITICAL] Wyjątek podczas inicjalizacji HardwareSerial!");
-    }
+    Serial.print("[GPS] Inicjalizacja obiektu GpsModule ---> ");
+    _gpsSerial.begin(_baudRate, SERIAL_8N1, _rxPin, _txPin);
+    Serial.printf("Config: Baud=%ld, RX=%d, TX=%d ---> ", _baudRate, _rxPin, _txPin);
+    _lastFixTime = millis();
+    Serial.println("Inicjalizacja zakończona");
 }
 
 void GpsModule::wake() {
-    try {
-        Serial.println("[GPS] WAKE");
-        // Zgodnie z dokumentacją Quectel: $PAIR002*38
-        _gpsSerial.println("$PAIR002*38");
-        // Krótkie opóźnienie na rozruch
-        delay(200); 
-    } catch (...) {
-        Serial.println("[GPS][ERR] Błąd podczas wybudzania.");
-    }
+    Serial.println("[GPS] WAKE");
+    // Zgodnie z dokumentacją Quectel: $PAIR002*38
+    _gpsSerial.println("$PAIR002*38");
+    // Krótkie opóźnienie na rozruch
+    delay(200); 
 }
 
 void GpsModule::sleep() {
-    try {
-        Serial.println("[GPS] SLEEP");
-        // 1. Zablokowanie trybu uśpienia (Lock System Sleep) - $PAIR382,1*2E
-        //    Dokumentacja str. 42: "CM4 will entry Standby if application not working."
-        _gpsSerial.println("$PAIR382,1*2E");
-        delay(100);
-        
-        // 2. Power Off GNSS system - $PAIR003*39
-        //    Dokumentacja str. 22: "Powers off the GNSS system... CM4 will be set to the Standby mode."
-        _gpsSerial.println("$PAIR003*39");
-    } catch (...) {
-        Serial.println("[GPS][ERR] Błąd podczas usypiania.");
-    }
+    Serial.println("[GPS] SLEEP");
+    // 1. Zablokowanie trybu uśpienia (Lock System Sleep) - $PAIR382,1*2E
+    //    Dokumentacja str. 42: "CM4 will entry Standby if application not working."
+    _gpsSerial.println("$PAIR382,1*2E");
+    delay(100);
+    
+    // 2. Power Off GNSS system - $PAIR003*39
+    //    Dokumentacja str. 22: "Powers off the GNSS system... CM4 will be set to the Standby mode."
+    _gpsSerial.println("$PAIR003*39");
+}
+
+int GpsModule::available() {
+    return _gpsSerial.available();
 }
 
 bool GpsModule::process() {
     bool encoded = false;
-    try {
-        while (_gpsSerial.available() > 0) {
+
+    while (_gpsSerial.available() > 0) {
             char c = _gpsSerial.read();
             if (DEBUG_RAW) Serial.write(c);
 
@@ -71,10 +63,6 @@ bool GpsModule::process() {
              // Ostrzeżenie tylko jeśli mieliśmy fixa, a teraz cisza totalna na linii
              // Serial.println("[GPS][WARN] Długa cisza na porcie RX.");
         }
-
-    } catch (...) {
-        Serial.println("[GPS][ERR] Wyjątek w process()");
-    }
     return encoded;
 }
 
@@ -88,19 +76,15 @@ bool GpsModule::hasFix() {
 GpsDataPacket GpsModule::getData() {
     GpsDataPacket packet = {0.0, 0.0, 0.0, 0.0, 0, 0.0, false};
     
-    try {
-        if (hasFix()) {
-            packet.lat = _gps.location.lat();
-            packet.lon = _gps.location.lng();
-            packet.elevation = _gps.altitude.meters();
-            packet.speed = _gps.speed.kmph();
-            packet.satellites = _gps.satellites.value();
-            packet.hdop = _gps.hdop.hdop();
-            packet.valid = true;
-        } 
-    } catch (...) {
-        Serial.println("[GPS][ERR] Wyjątek podczas pobierania danych.");
-    }
+    if (hasFix()) {
+        packet.lat = _gps.location.lat();
+        packet.lon = _gps.location.lng();
+        packet.alt = _gps.altitude.meters();
+        packet.speed = _gps.speed.kmph();
+        packet.satellites = _gps.satellites.value();
+        packet.hdop = _gps.hdop.hdop();
+        packet.valid = true;
+    } 
     
     return packet;
 }
@@ -110,43 +94,37 @@ bool GpsModule::isTimeAvailable() {
 }
 
 uint64_t GpsModule::getUnixTime() {
-    try {
-        if (!isTimeAvailable()) return 0;
+    if (!isTimeAvailable()) return 0;
 
-        // Pobranie komponentów czasu
-        int year = _gps.date.year();
-        // Obsługa formatu roku (biblioteka zwykle zwraca pełny rok, ale dla pewności)
-        if (year < 100) year += 2000; 
-        
-        struct tm t = {0};
-        t.tm_year = year - 1900;
-        t.tm_mon  = _gps.date.month() - 1;
-        t.tm_mday = _gps.date.day();
-        t.tm_hour = _gps.time.hour();
-        t.tm_min  = _gps.time.minute();
-        t.tm_sec  = _gps.time.second();
-        t.tm_isdst = 0;
+    // Pobranie komponentów czasu
+    int year = _gps.date.year();
+    // Obsługa formatu roku (biblioteka zwykle zwraca pełny rok, ale dla pewności)
+    if (year < 100) year += 2000; 
+    
+    struct tm t = {0};
+    t.tm_year = year - 1900;
+    t.tm_mon  = _gps.date.month() - 1;
+    t.tm_mday = _gps.date.day();
+    t.tm_hour = _gps.time.hour();
+    t.tm_min  = _gps.time.minute();
+    t.tm_sec  = _gps.time.second();
+    t.tm_isdst = 0;
 
-        // Ustawienie strefy czasowej na UTC dla mktime
-        const char* oldtz = getenv("TZ");
-        setenv("TZ", "UTC0", 1);
-        tzset();
+    // Ustawienie strefy czasowej na UTC dla mktime
+    const char* oldtz = getenv("TZ");
+    setenv("TZ", "UTC0", 1);
+    tzset();
 
-        time_t secs = mktime(&t);
+    time_t secs = mktime(&t);
 
-        // Przywrócenie strefy (dla porządku w reszcie systemu)
-        if (oldtz) setenv("TZ", oldtz, 1);
-        else unsetenv("TZ");
-        tzset();
+    // Przywrócenie strefy (dla porządku w reszcie systemu)
+    if (oldtz) setenv("TZ", oldtz, 1);
+    else unsetenv("TZ");
+    tzset();
 
-        if (secs <= 0) return 0;
+    if (secs <= 0) return 0;
 
-        return (uint64_t)secs * 1000ULL;
-
-    } catch (...) {
-        Serial.println("[GPS][ERR] Błąd konwersji czasu.");
-        return 0;
-    }
+    return (uint64_t)secs * 1000ULL;
 }
 
 void GpsModule::logStatus(bool gpsOk) {

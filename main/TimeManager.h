@@ -19,8 +19,6 @@ public:
     static void IRAM_ATTR handlePPS();
 
     static void syncTime(uint64_t unixMs);
-    static void enableNtpBackup(const char* s1, const char* s2 = nullptr, const char* s3 = nullptr);
-
     static uint64_t getTimestampMs();
     static bool isSynchronized();
 
@@ -36,9 +34,6 @@ private:
 
     static TimeSource currentSource;
 
-    static const char* ntpServer1;
-    static const char* ntpServer2;
-    static const char* ntpServer3;
     static bool ntpEnabled;
     static uint32_t lastPeriodicCheck;
 

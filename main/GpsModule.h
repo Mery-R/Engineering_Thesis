@@ -10,7 +10,7 @@
 struct GpsDataPacket {
     double lat;
     double lon;
-    double elevation;
+    double alt;
     double speed;
     uint32_t satellites;
     double hdop;
@@ -30,6 +30,11 @@ public:
 
     // Usypianie modułu (Quectel PAIR commands)
     void sleep();
+
+    // Główna funkcja odczytu - powinna być wołana w pętli przez określony czas
+    // Zwraca true, jeśli odebrano i zdekodowano poprawne zdanie NMEA
+    // Zwraca liczbę dostępnych bajtów w buforze serial
+    int available();
 
     // Główna funkcja odczytu - powinna być wołana w pętli przez określony czas
     // Zwraca true, jeśli odebrano i zdekodowano poprawne zdanie NMEA

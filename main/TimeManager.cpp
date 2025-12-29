@@ -10,9 +10,9 @@ volatile bool TimeManager::timeValid = false;
 volatile uint32_t TimeManager::lastPpsMillis = 0;
 TimeSource TimeManager::currentSource = TIME_LOCAL;
 
-const char* TimeManager::ntpServer1 = nullptr;
-const char* TimeManager::ntpServer2 = nullptr;
-const char* TimeManager::ntpServer3 = nullptr;
+const char* ntpServer1 = "pool.ntp.org";
+const char* ntpServer2 = "time.google.com";
+const char* ntpServer3 = "time.cloudflare.com";
 bool TimeManager::ntpEnabled = false;
 uint32_t TimeManager::lastPeriodicCheck = 0;
 
@@ -25,6 +25,10 @@ void TimeManager::begin(int PPS_PIN) {
         pinMode(PPS_PIN, INPUT);
         attachInterrupt(digitalPinToInterrupt(PPS_PIN), handlePPS, RISING);
     }
+    
+    // Auto-enable NTP
+    configTime(0, 0, ntpServer1, ntpServer2, ntpServer3);
+    ntpEnabled = true;
 }
 
 void IRAM_ATTR TimeManager::handlePPS() {
@@ -42,16 +46,6 @@ void IRAM_ATTR TimeManager::handlePPS() {
         }
     }
 }
-
-// --- enable NTP backup ---
-void TimeManager::enableNtpBackup(const char* s1, const char* s2, const char* s3) {
-    ntpServer1 = s1;
-    ntpServer2 = s2;
-    ntpServer3 = s3;
-    ntpEnabled = true;
-    configTime(0, 0, s1, s2, s3);
-}
-
 // --- aktualizacja z GPS ---
 void TimeManager::updateFromGps(uint64_t gpsUnixMs) {
     if (gpsUnixMs == 0) return;

@@ -42,7 +42,7 @@ bool ThingsBoardClient::connect() {
             Serial.printf("[TB] MQTT Buffer Size: %d\n", _mqttClient.getBufferSize());
             
             _mqttClient.setCallback(onMqttMessage);
-            _mqttClient.subscribe("v1/devices/me/rpc/request/+");
+            // _mqttClient.subscribe("v1/devices/me/rpc/request/+"); // Removed
             _mqttClient.subscribe("v1/devices/me/attributes");
             _mqttClient.subscribe("v1/devices/me/attributes/response/+");
             
@@ -64,9 +64,6 @@ void ThingsBoardClient::loop() {
     _mqttClient.loop();
 }
 
-void ThingsBoardClient::setRpcCallback(void (*callback)(bool forced)) {
-    _rpcCallback = callback;
-}
 
 void ThingsBoardClient::setAttributesCallback(void (*callback)(const JsonObject &data)) {
     _attributesCallback = callback;
@@ -105,6 +102,7 @@ void ThingsBoardClient::processMessage(char* topic, byte* payload, unsigned int 
     // Push: v1/devices/me/attributes
     // Response: v1/devices/me/attributes/response/+
     if (topicStr.startsWith("v1/devices/me/attributes")) {
+        Serial.printf("[TB] Attributes received on: %s\n", topicStr.c_str());
         JsonObject data;
         if (doc.containsKey("shared")) {
             data = doc["shared"];
@@ -117,27 +115,7 @@ void ThingsBoardClient::processMessage(char* topic, byte* payload, unsigned int 
         }
     }
 
-    // 2. RPC
-    // Topic: v1/devices/me/rpc/request/{id}
-    else if (topicStr.startsWith("v1/devices/me/rpc/request/")) {
-        const char* method = doc["method"];
-        // Check for 'force' method or similar logic
-        // User logic seemed to be just a generic "force" toggle, 
-        // maybe looking for method "forceSend" or params "forced": true ?
-        // Going by previous implementation hint: "rpcForceCallback(bool forced)"
-        
-        bool forced = false;
-        if (doc.containsKey("params")) {
-             if (doc["params"].is<bool>()) forced = doc["params"];
-             else if (doc["params"].is<JsonObject>() && doc["params"].containsKey("forced")) forced = doc["params"]["forced"];
-        }
-        // Also check method name if needed
-        
-        if (_rpcCallback) {
-            _rpcCallback(forced);
-        }
     }
-}
 
 // Helper function to format telemetry data
 static void formatTelemetry(JsonArray &batch) {
@@ -190,24 +168,22 @@ int ThingsBoardClient::sendBatchDirect(JsonArray &batch) {
 
     formatTelemetry(batch);
 
-    try {
-        String payload;
-        serializeJson(batch, payload);
+    String payload;
+    if (serializeJson(batch, payload) == 0) {
+        Serial.println("[TB][ERR] Serialization failed");
+        return 0;
+    }
 
-        if (!_mqttClient.connected() && !connect()) {
-            Serial.println("[TB][ERR] MQTT not connected");
-            return 0;
-        }
+    if (!_mqttClient.connected() && !connect()) {
+        Serial.println("[TB][ERR] MQTT not connected");
+        return 0;
+    }
 
-        if (_mqttClient.publish("v1/devices/me/telemetry", payload.c_str())) {
-            //Serial.printf("[TB] Sent %d records directly from buffer\n", batch.size());
-            return batch.size();
-        } else {
-            Serial.println("[TB][ERR] Publish failed");
-            return 0;
-        }
-    } catch (...) {
-        Serial.println("[TB][ERR] Exception during sendBatchDirect");
+    if (_mqttClient.publish("v1/devices/me/telemetry", payload.c_str())) {
+        //Serial.printf("[TB] Sent %d records directly from buffer\n", batch.size());
+        return batch.size();
+    } else {
+        Serial.println("[TB][ERR] Publish failed");
         return 0;
     }
 }

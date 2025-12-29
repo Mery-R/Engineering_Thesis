@@ -1,47 +1,50 @@
-#pragma once
-#include <Arduino.h>
-#include <SPI.h>
+#ifndef SDMODULE_H
+#define SDMODULE_H
+
 #include <SD.h>
-#include "SensorData.h"
 #include <ArduinoJson.h>
+#include "SensorData.h"
 #include "TimeManager.h"
+#include <freertos/semphr.h>
+
+extern SemaphoreHandle_t sdMutex; // Global variable from main.ino
 
 class SdModule {
 public:
     SdModule(int csPin);
-
-    bool begin();
-
-    // Logs a batch to the current archive file (rotates if needed)
+    
+    // Integrated initialization and state check
+    bool ensureReady(bool force = false);
+    
+    // Archiving
     bool logToArchive(const SensorData* batch, int count);
 
-    // Logs a batch to the pending file (for failed sends)
+    // Pending (Offline buffer)
     bool logToPending(const SensorData* batch, int count);
-
-    // Logs a JSON array to the archive (used when moving data from pending to archive)
-    bool logJsonToArchive(const JsonArray& array);
-
-    // Reads a batch from the pending file starting at offset
-    int readPendingBatch(JsonArray &outArray, int maxItems, size_t &offset);
-
-    // Clears the pending file (after successful retry)
-    bool clearPending();
+    
+    // CHANGE: Removed 'offset' parameter, as we always read from the beginning (FIFO)
+    int readPendingBatch(JsonArray &outArray, int maxItems);
+    
+    // NEW FUNCTION: Removes 'count' first lines from the pending file
+    bool removeFirstRecords(int count);
+    
+    bool clearPending(); // Deletes the entire file
 
     bool isReady() const;
 
-    // Checks if SD card is present and attempts to remount if not
-    bool checkAndRemount();
-
 private:
     int _csPin;
-    String _currentArchiveFilename;
-    const char* _pendingFilename = "/pending.jsonl";
-    const size_t MAX_FILE_SIZE = 500 * 1024; // 500KB
     bool _initialized = false;
     unsigned long _lastRetryTime = 0;
+    
+    String _currentArchiveFilename = "";
+    const char* _pendingFilename = "/pending.txt";
+    const size_t MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB limit
 
-    void rotateArchiveFile();
     String generateArchiveFilename();
+    void rotateArchiveFile();
     void checkArchiveSizeAndRotate();
     String getLatestArchiveFilename();
 };
+
+#endif

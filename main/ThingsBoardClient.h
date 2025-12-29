@@ -23,8 +23,8 @@ public:
     // Wysyła rekordy z SD które mają tb_sent=false
     int sendUnsent(SdModule &sdModule, int maxItems);
 
-    // Register RPC handler for 'forced' boolean parameter
-    void setRpcCallback(void (*callback)(bool forced));
+    // Register RPC handler for 'forced' boolean parameter (Removed)
+    // void setRpcCallback(void (*callback)(bool forced));
 
     // Request shared attributes from ThingsBoard
     void requestSharedAttributes();
@@ -42,14 +42,14 @@ private:
     WiFiClient _wifiClient;
     PubSubClient _mqttClient;
     
-    void (*_rpcCallback)(bool forced) = nullptr;
+    // void (*_rpcCallback)(bool forced) = nullptr;
     void (*_attributesCallback)(const JsonObject &data) = nullptr;
     
     // Internal MQTT callback
     static void onMqttMessage(char* topic, byte* payload, unsigned int length);
     void processMessage(char* topic, byte* payload, unsigned int length);
 
-    void handleRpc(const char* methodName, const JsonObject &params);
+    // void handleRpc(const char* methodName, const JsonObject &params);
     
     static ThingsBoardClient* _instance;
 };

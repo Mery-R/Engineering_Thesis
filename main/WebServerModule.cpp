@@ -1,6 +1,8 @@
 #include "WebServerModule.h"
 #include <ArduinoJson.h>
 
+extern SemaphoreHandle_t sdMutex;
+
 WebServer server(80);
 
 void handleRoot() {
@@ -96,19 +98,25 @@ void handleGPSData() {
     // Support both /data_log.txt (JSON lines) and /data.csv (legacy)
     const char* targetFile = "/data.json";
     
+    if (sdMutex) xSemaphoreTake(sdMutex, portMAX_DELAY);
+
     if (!SD.exists(targetFile)) {
+        if (sdMutex) xSemaphoreGive(sdMutex);
         server.send(404, "text/plain", "Brak danych GPS");
         return;
     }
 
     File file = SD.open(targetFile);
     if(!file){
+        if (sdMutex) xSemaphoreGive(sdMutex);
         server.send(500, "text/plain", "Nie można otworzyć pliku");
         return;
     }
 
     server.streamFile(file, "application/json");
     file.close();
+    
+    if (sdMutex) xSemaphoreGive(sdMutex);
 }
 
 void startWebServer(uint16_t port) {
