@@ -83,10 +83,9 @@ bool SdModule::logToPending(const SensorData* batch, int count) {
     for (int i = 0; i < count; ++i) {
         JsonDocument doc;
         JsonObject obj = doc.to<JsonObject>();
-        sensorDataToJson(batch[i], obj);
+        sensorDataToTb(batch[i], obj);
         
-        // Mark as unsent
-        obj["tb_sent"] = false;
+
         
         if (serializeJson(doc, file) == 0) {
             Serial.println("[SD] Failed to write record to pending");
@@ -340,7 +339,7 @@ bool SdModule::logToArchive(const SensorData* batch, int count) {
     for (int i = 0; i < count; ++i) {
         JsonDocument doc;
         JsonObject obj = doc.to<JsonObject>();
-        sensorDataToJson(batch[i], obj);
+        sensorDataToSd(batch[i], obj);
         
         if (serializeJson(doc, file) == 0) {
             Serial.println("[SD] Failed to write to archive");

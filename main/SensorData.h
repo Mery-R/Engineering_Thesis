@@ -8,41 +8,66 @@
 #define ERR_SD_FAIL      (1 << 2)
 #define ERR_TB_FAIL      (1 << 3)
 
+// X-Macro definition for Sensor Data
+// XX(Type, Name, JsonKey, IsTelemetry, IsSd)
+#define SENSOR_DATA_MAP(XX) \
+    XX(uint64_t, ts,                       "ts",                       false, true) \
+    XX(int,      ts_source,                "ts_source",                true,  true) \
+    XX(double,   lat,                      "lat",                      true,  true) \
+    XX(double,   lon,                      "lon",                      true,  true) \
+    XX(double,   alt,                      "alt",                      true,  true) \
+    XX(double,   vel,                      "vel",                      true,  true) \
+    XX(float,    temp,                     "temp",                     true,  true) \
+    XX(float,    can_vel,                  "can_vel",                  true,  true) \
+    XX(uint64_t, lgr_ts,                   "lgr_ts",                   false, true) \
+    XX(uint64_t, ltr_ts,                   "ltr_ts",                   false, true) \
+    XX(uint64_t, lcr_ts,                   "lcr_ts",                   false, true) \
+    XX(uint8_t,  ec,                       "ec",                       true,  true) \
+    XX(bool,     tb_sent,                  "tb_sent",                  false, true)
+
+    //X-Macro fields
+    //Timestamp
+    //Timestamp source
+    //Latitude
+    //Longitude
+    //Altitude
+    //Velocity
+    //Temperature
+    //CAN velocity
+    //Last GPS fix timestamp
+    //Last temperature read timestamp
+    //Last CAN message received timestamp
+    //Error codes
+    //ThingsBoard data flag
+
+// SensorData structure definition
 struct SensorData {
-  // Timestamp
-  uint64_t timestamp;
-  int timestamp_time_source;
-  // GPS Data
-  double lat;
-  double lon;
-  double alt;
-  double speed;
-  // Temp Data
-  float temp;
-  // CAN Data
-  float can_speed;
-  // Debug Timestamps 
-  uint64_t last_gps_fix_timestamp;
-  uint64_t last_temp_read_timestamp;
-  uint64_t last_can_read_timestamp;
-  // Error Code
-  uint8_t error_code;
-  // Flags
-  bool tb_sent;
+#define XX_FIELD(Type, Name, Key, IsTel, IsSd) Type Name;
+    SENSOR_DATA_MAP(XX_FIELD)
+#undef XX_FIELD
 };
 
-inline void sensorDataToJson(const SensorData &data, JsonObject &out) {
-    out["timestamp"] = data.timestamp;
-    out["time_source"] = data.timestamp_time_source;
-    out["tb_sent"] = data.tb_sent;
-    out["error_code"] = data.error_code;
-    out["lat"] = data.lat;
-    out["lon"] = data.lon;
-    out["alt"] = data.alt;
-    out["speed"] = data.speed;
-    out["temp"] = data.temp;
-    out["can_speed"] = data.can_speed;
-    out["last_gps_fix_timestamp"] = data.last_gps_fix_timestamp;
-    out["last_temp_read_timestamp"] = data.last_temp_read_timestamp;
-    out["last_can_read_timestamp"] = data.last_can_read_timestamp;
+// 1. Function to convert SensorData to ThingsBoard JSON format
+// {"ts": <timestamp>, "values": { <telemetry keys only> }}
+inline void sensorDataToTb(const SensorData &data, JsonObject &root) {
+    root["ts"] = data.ts;
+    JsonObject values = root.createNestedObject("values");
+
+#define XX_TO_TB(Type, Name, Key, IsTel, IsSd) \
+    if (IsTel) { \
+        values[Key] = data.Name; \
+    }
+    SENSOR_DATA_MAP(XX_TO_TB)
+#undef XX_TO_TB
+}
+
+// 2. Function to convert SensorData to SD Card JSON format
+// Flat structure with configurable fields (IsSd)
+inline void sensorDataToSd(const SensorData &data, JsonObject &root) {
+#define XX_TO_SD(Type, Name, Key, IsTel, IsSd) \
+    if (IsSd) { \
+        root[Key] = data.Name; \
+    }
+    SENSOR_DATA_MAP(XX_TO_SD)
+#undef XX_TO_SD
 }

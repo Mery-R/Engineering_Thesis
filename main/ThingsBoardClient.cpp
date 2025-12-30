@@ -117,33 +117,6 @@ void ThingsBoardClient::processMessage(char* topic, byte* payload, unsigned int 
 
     }
 
-// Helper function to format telemetry data
-static void formatTelemetry(JsonArray &batch) {
-    for (int i = 0; i < batch.size(); ++i) {
-        if (!batch[i].containsKey("ts")) {
-            uint64_t ts_ms = 0ULL;
-            if (batch[i].containsKey("timestamp")) {
-                uint64_t raw = (uint64_t) batch[i]["timestamp"];
-                if (raw >= 1000000000000ULL) ts_ms = raw;
-                else if (raw >= 1000000000ULL) ts_ms = raw * 1000ULL;
-            }
-            if (ts_ms == 0ULL) {
-                time_t now_s = time(NULL);
-                if (now_s > 0) ts_ms = (uint64_t)now_s * 1000ULL + (uint64_t)(millis() % 1000);
-                else ts_ms = (uint64_t) millis();
-            }
-            batch[i]["ts"] = ts_ms;
-        }
-
-        if (!batch[i].containsKey("values")) {
-            JsonObject vals = batch[i].createNestedObject("values");
-            const char* keys[] = {"lat","lon","elevation","speed","temp","time_source","last_gps_fix_timestamp","last_temp_read_timestamp","error_code"};
-            for (const char* k : keys) {
-                if (batch[i].containsKey(k)) vals[k] = batch[i][k];
-            }
-        }
-    }
-}
 
 // -------------------
 // Wysyła dane bezpośrednio z JsonArray (z ringBuffer) do ThingsBoard
@@ -153,7 +126,7 @@ static void formatTelemetry(JsonArray &batch) {
 //     "lat": double,
 //     "lon": double,
 //     "elevation": double,
-//     "speed": double,
+//     "vel": double,
 //     "temp": float,
 //     "timestamp": uint64 (ms),
 //     "time_source": int,
@@ -166,24 +139,33 @@ static void formatTelemetry(JsonArray &batch) {
 int ThingsBoardClient::sendBatchDirect(JsonArray &batch) {
     if (batch.size() == 0) return 0;
 
-    formatTelemetry(batch);
+    // USUNIĘTO: formatTelemetry(batch) - jest zbędne, SensorData.h robi to lepiej.
 
     String payload;
+    // Serializacja do Stringa (wymagane przez PubSubClient)
     if (serializeJson(batch, payload) == 0) {
-        Serial.println("[TB][ERR] Serialization failed");
+        Serial.println("[TB][ERR] Serialization failed (Out of memory?)");
         return 0;
     }
 
-    if (!_mqttClient.connected() && !connect()) {
-        Serial.println("[TB][ERR] MQTT not connected");
-        return 0;
+    // Automatyczne wznawianie połączenia, jeśli zerwane
+    if (!_mqttClient.connected()) {
+        if (!connect()) {
+            // Serial.println("[TB][ERR] Cannot send - MQTT disconnected");
+            return 0;
+        }
     }
 
+    // Zwiększ bufor MQTT, jeśli payload jest duży
+    if (payload.length() > _mqttClient.getBufferSize()) {
+        _mqttClient.setBufferSize(payload.length() + 100);
+    }
+
+    // Wysyłka na topic telemetryczny
     if (_mqttClient.publish("v1/devices/me/telemetry", payload.c_str())) {
-        //Serial.printf("[TB] Sent %d records directly from buffer\n", batch.size());
         return batch.size();
     } else {
-        Serial.println("[TB][ERR] Publish failed");
+        Serial.println("[TB][ERR] Publish failed (Packet too big?)");
         return 0;
     }
 }

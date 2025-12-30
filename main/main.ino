@@ -274,8 +274,8 @@ void CoordinatorTask(void* pvParameters) {
 
         xSemaphoreTake(dataSem, portMAX_DELAY);
         // Get timestamp
-        data.timestamp = TimeManager::getTimestampMs();
-        data.timestamp_time_source = TimeManager::getTimeSource();
+        data.ts = TimeManager::getTimestampMs();
+        data.ts_source = TimeManager::getTimeSource();
 
         // Make a snapshot
         SensorData snapshot = data;
@@ -425,14 +425,15 @@ void TaskGPS(void* pvParameters){
             data.lat = packet.lat;
             data.lon = packet.lon;
             data.alt = packet.alt;
-            data.speed = packet.speed;
-            data.last_gps_fix_timestamp = TimeManager::getTimestampMs();
+            data.alt = packet.alt;
+            data.vel = packet.vel;
+            data.lgr_ts = TimeManager::getTimestampMs();
             
-            data.error_code &= ~ERR_GPS_NO_FIX;
+            data.ec &= ~ERR_GPS_NO_FIX;
             Serial.printf("[GPS] Fix acquired! Lat: %f, Lon: %f\n", data.lat, data.lon);
             digitalWrite(LED_GPS, HIGH);
         } else {
-            data.error_code |= ERR_GPS_NO_FIX;
+            data.ec |= ERR_GPS_NO_FIX;
             Serial.printf("[GPS] Timeout: No fix within %lu ms.\n", TIMEOUT);
             digitalWrite(LED_GPS, LOW);
         }
@@ -472,12 +473,12 @@ void TaskTemp(void* pvParameters) {
         // DEVICE_DISCONNECTED_C is constant (-127.0)
         if (tempC != DEVICE_DISCONNECTED_C && tempC > -55 && tempC < 125) {
             data.temp = tempC; 
-            data.last_temp_read_timestamp = TimeManager::getTimestampMs();
-            data.error_code &= ~ERR_TEMP_FAIL;
+            data.ltr_ts = TimeManager::getTimestampMs();
+            data.ec &= ~ERR_TEMP_FAIL;
             
             Serial.printf("[TEMP] Temp: %.2f C\n", tempC);
         } else {
-            data.error_code |= ERR_TEMP_FAIL;
+            data.ec |= ERR_TEMP_FAIL;
             Serial.println("[TEMP] Error: Read failed");
         }
         
@@ -503,15 +504,15 @@ void TaskCAN(void* pvParameters) {
         if (canModule.getMessage(msg)) {
             
             // Scale speed
-            float speed = canModule.scaleSpeed(msg);
+            float vel = canModule.scaleSpeed(msg);
             
             // If valid speed
-            if (speed >= 0) {
+            if (vel >= 0) {
                 
                 // Write data
                 xSemaphoreTake(dataSem, portMAX_DELAY);
-                data.can_speed = speed;
-                data.last_can_read_timestamp = TimeManager::getTimestampMs();
+                data.can_vel = vel;
+                data.lcr_ts = TimeManager::getTimestampMs();
                 xSemaphoreGive(dataSem);
 
                 // Signal to Coordinator
@@ -588,7 +589,7 @@ void TaskDataSync(void* pvParameters) {
                 JsonArray arr = doc.to<JsonArray>();
                 for (int i = 0; i < count; ++i) {
                     JsonObject o = arr.createNestedObject();
-                    sensorDataToJson(batch[i], o);
+                    sensorDataToTb(batch[i], o);
                 }
                 
                 if (tbClient.sendBatchDirect(arr)) {

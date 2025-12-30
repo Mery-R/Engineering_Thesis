@@ -38,7 +38,7 @@ private:
     unsigned long _lastRetryTime = 0;
     
     String _currentArchiveFilename = "";
-    const char* _pendingFilename = "/pending.txt";
+    const char* _pendingFilename = "/pending.jsonl";
     const size_t MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB limit
 
     String generateArchiveFilename();

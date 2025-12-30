@@ -80,7 +80,7 @@ GpsDataPacket GpsModule::getData() {
         packet.lat = _gps.location.lat();
         packet.lon = _gps.location.lng();
         packet.alt = _gps.altitude.meters();
-        packet.speed = _gps.speed.kmph();
+        packet.vel = _gps.speed.kmph();
         packet.satellites = _gps.satellites.value();
         packet.hdop = _gps.hdop.hdop();
         packet.valid = true;

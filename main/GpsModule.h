@@ -11,7 +11,7 @@ struct GpsDataPacket {
     double lat;
     double lon;
     double alt;
-    double speed;
+    double vel;
     uint32_t satellites;
     double hdop;
     bool valid;
