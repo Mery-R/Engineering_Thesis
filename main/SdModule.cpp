@@ -3,6 +3,10 @@
 // Constructor
 SdModule::SdModule(int csPin) : _csPin(csPin) {}
 
+// -----------------------------------------------------
+// --------------- Public Methods ----------------------
+// -----------------------------------------------------
+
 // SD Card Initialization
 bool SdModule::ensureReady(bool force) {
     if (sdMutex) xSemaphoreTake(sdMutex, portMAX_DELAY);
@@ -227,19 +231,8 @@ bool SdModule::removeFirstRecords(int count) {
     return true;
 }
 
-bool SdModule::clearPending() {
-    if (sdMutex) xSemaphoreTake(sdMutex, portMAX_DELAY);
-    bool res = true;
-    if (SD.exists(_pendingFilename)) {
-        Serial.println("[SD] Deleting pending file.");
-        res = SD.remove(_pendingFilename);
-    }
-    if (sdMutex) xSemaphoreGive(sdMutex);
-    return res;
-}
-
 // -----------------------------------------------------
-// ------------------ ARCHIVE LOGS ---------------------
+// --------------- Private Methods ---------------------
 // -----------------------------------------------------
 
 String SdModule::generateArchiveFilename() {

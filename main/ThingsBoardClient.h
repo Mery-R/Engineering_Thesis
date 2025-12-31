@@ -13,24 +13,13 @@ public:
                       const char* username,
                       const char* password);
 
-    bool connect();
-    bool isConnected();
-    void loop();
-
-    // Wysyła dane bezpośrednio z JsonArray (z ringBuffer) do ThingsBoard
-    int sendBatchDirect(JsonArray &batch);
-
-    // Wysyła rekordy z SD które mają tb_sent=false
-    int sendUnsent(SdModule &sdModule, int maxItems);
-
-    // Register RPC handler for 'forced' boolean parameter (Removed)
-    // void setRpcCallback(void (*callback)(bool forced));
-
-    // Request shared attributes from ThingsBoard
-    void requestSharedAttributes();
-
-    // Register callback for attributes updates
-    void setAttributesCallback(void (*callback)(const JsonObject &data));
+    bool connect(); // Connects to ThingsBoard
+    bool isConnected(); // Checks if MQTT connection is alive
+    void loop(); // Keeps MQTT connection alive
+    void requestSharedAttributes(); // Request shared attributes from ThingsBoard
+    void setAttributesCallback(void (*callback)(const JsonObject &data)); // Register callback for attributes updates
+    int  sendBatchDirect(JsonArray &batch); // Sends data directly from JsonArray (from ringBuffer) to ThingsBoard
+    void sendClientAttribute(const char* key, const char* value); // Sends a client attribute (static info)
 
 private:
     const char* _server;
@@ -41,15 +30,11 @@ private:
 
     WiFiClient _wifiClient;
     PubSubClient _mqttClient;
-    
-    // void (*_rpcCallback)(bool forced) = nullptr;
-    void (*_attributesCallback)(const JsonObject &data) = nullptr;
-    
-    // Internal MQTT callback
-    static void onMqttMessage(char* topic, byte* payload, unsigned int length);
-    void processMessage(char* topic, byte* payload, unsigned int length);
 
-    // void handleRpc(const char* methodName, const JsonObject &params);
+    static ThingsBoardClient* _instance; // Instance for static callback
     
-    static ThingsBoardClient* _instance;
+    void (*_attributesCallback)(const JsonObject &data) = nullptr; // Attributes callback
+    static void onMqttMessage(char* topic, byte* payload, unsigned int length); // Internal MQTT callback
+    void processMessage(char* topic, byte* payload, unsigned int length); // Process MQTT message
+    static const char* getMqttStateDescription(int state); // Get MQTT state description
 };

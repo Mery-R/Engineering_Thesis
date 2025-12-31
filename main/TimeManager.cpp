@@ -3,7 +3,7 @@
 #include <sntp.h>
 #include <WiFi.h>
 
-// --- zmienne statyczne ---
+// --- static variables ---
 volatile uint64_t TimeManager::baseUnixMs = 0;
 volatile uint32_t TimeManager::baseMillis = 0;
 volatile bool TimeManager::timeValid = false;
@@ -16,8 +16,12 @@ const char* ntpServer3 = "time.cloudflare.com";
 bool TimeManager::ntpEnabled = false;
 uint32_t TimeManager::lastPeriodicCheck = 0;
 
-// Minimalny timestamp (ms) uważany za sensowny - mniejsze wartości ignorujemy
+// Minimum timestamp (ms) considered valid - smaller values are ignored
 const uint64_t TimeManager::MIN_VALID_UNIX_MS = 1763651027000ULL;
+
+// -----------------------------------------------------
+// --------------- Public Methods ----------------------
+// -----------------------------------------------------
 
 // --- begin ---
 void TimeManager::begin(int PPS_PIN) {
@@ -46,7 +50,7 @@ void IRAM_ATTR TimeManager::handlePPS() {
         }
     }
 }
-// --- aktualizacja z GPS ---
+// --- Update from GPS ---
 void TimeManager::updateFromGps(uint64_t gpsUnixMs) {
     if (gpsUnixMs == 0) return;
     if (gpsUnixMs < MIN_VALID_UNIX_MS) {
@@ -68,7 +72,7 @@ void TimeManager::updateFromGps(uint64_t gpsUnixMs) {
     currentSource = TIME_GPS;
 }
 
-// --- synchronizacja ---
+// --- Synchronization ---
 void TimeManager::syncTime(uint64_t unixMs) {
     if (unixMs >= MIN_VALID_UNIX_MS) {
         baseUnixMs = unixMs;
@@ -87,16 +91,16 @@ void TimeManager::syncTime(uint64_t unixMs) {
 
 // --- getTimestampMs ---
 uint64_t TimeManager::getTimestampMs() {
-    // 1. GPS lub poprzednio zsynchronizowany czas
+    // 1. GPS or previously synchronized time
     if (timeValid && baseUnixMs >= MIN_VALID_UNIX_MS) {
         uint32_t delta = millis() - baseMillis;
         return baseUnixMs + delta;
     }
 
-    // 2. NTP jeśli dostępne
+    // 2. NTP if available
     uint64_t ntpMs = getNtpTimeMs();
     if (ntpMs > 0) {
-        // Jeśli to pierwszy raz, zapisz jako bazę
+        // If it's the first time, save as base
         if (!timeValid) {
             syncTime(ntpMs);
         }
@@ -104,7 +108,7 @@ uint64_t TimeManager::getTimestampMs() {
         return ntpMs;
     }
 
-    // 3. Brak wszystkiego → czas lokalny
+    // 3. No source -> local time
     currentSource = TIME_LOCAL;
     return millis();
 }
@@ -123,26 +127,14 @@ bool TimeManager::isSynchronized() {
     return (time(nullptr) > 100000);
 }
 
+// -----------------------------------------------------
+// --------------- Private Methods ---------------------
+// -----------------------------------------------------
+
 // --- getNtpTimeMs ---
 uint64_t TimeManager::getNtpTimeMs() {
     if (!ntpEnabled) return 0;
     time_t t = time(nullptr);
     if (t > 100000) return ((uint64_t)t) * 1000ULL;
     return 0;
-}
-
-// --- periodic check ---
-void TimeManager::periodicCheck() {
-    if (millis() - lastPeriodicCheck < 5 * 60 * 1000) return; // 5 minut
-    lastPeriodicCheck = millis();
-
-    uint64_t current = getTimestampMs();
-    uint64_t ntpMs = getNtpTimeMs();
-    if (ntpMs > 0) {
-        int64_t diff = (int64_t)(ntpMs - current);
-        if (abs(diff) > 2000) { // jeśli różnica > 2s
-            Serial.printf("[TimeManager] Correcting ESP clock by %lld ms\n", diff);
-            syncTime(current + diff);
-        }
-    }
 }

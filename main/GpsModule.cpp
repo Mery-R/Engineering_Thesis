@@ -5,25 +5,29 @@ GpsModule::GpsModule(int rxPin, int txPin, long baudRate, int uartNr)
       _lastFixTime(0), _fixAcquired(false) {
 }
 
+// -----------------------------------------------------
+// --------------- Public Methods ----------------------
+// -----------------------------------------------------
+
 void GpsModule::begin() {
-    Serial.print("[GPS] Inicjalizacja obiektu GpsModule ---> ");
+    Serial.print("[GPS] Initializing GpsModule object ---> ");
     _gpsSerial.begin(_baudRate, SERIAL_8N1, _rxPin, _txPin);
     Serial.printf("Config: Baud=%ld, RX=%d, TX=%d ---> ", _baudRate, _rxPin, _txPin);
     _lastFixTime = millis();
-    Serial.println("Inicjalizacja zakończona");
+    Serial.println("Initialization finished");
 }
 
 void GpsModule::wake() {
     Serial.println("[GPS] WAKE");
-    // Zgodnie z dokumentacją Quectel: $PAIR002*38
+    // According to Quectel documentation: $PAIR002*38
     _gpsSerial.println("$PAIR002*38");
-    // Krótkie opóźnienie na rozruch
+    // Short delay for startup
     delay(200); 
 }
 
 void GpsModule::sleep() {
     Serial.println("[GPS] SLEEP");
-    // 1. Zablokowanie trybu uśpienia (Lock System Sleep) - $PAIR382,1*2E
+    // 1. Lock System Sleep - $PAIR382,1*2E
     //    Dokumentacja str. 42: "CM4 will entry Standby if application not working."
     _gpsSerial.println("$PAIR382,1*2E");
     delay(100);
@@ -47,28 +51,28 @@ bool GpsModule::process() {
             if (_gps.encode(c)) {
                 encoded = true;
                 
-                // Jeśli mamy ważne dane lokalizacyjne, aktualizujemy timestamp
+                // If we have valid location data, update timestamp
                 if (_gps.location.isValid()) {
                     _lastFixTime = millis();
                     if (!_fixAcquired) {
-                        Serial.println("[GPS] Pierwszy FIX po wybudzeniu/starcie!");
+                        Serial.println("[GPS] First FIX after wake/startup!");
                         _fixAcquired = true;
                     }
                 }
             }
         }
         
-        // Sprawdzenie timeoutu danych (czy moduł w ogóle coś nadaje)
+        // Check data timeout (if module transmits anything)
         if (millis() - _lastFixTime > (GPS_DATA_TIMEOUT_MS * 4) && _fixAcquired) {
-             // Ostrzeżenie tylko jeśli mieliśmy fixa, a teraz cisza totalna na linii
-             // Serial.println("[GPS][WARN] Długa cisza na porcie RX.");
+             // Warning only if we had a fix, and now total silence on the line
+             // Serial.println("[GPS][WARN] Long silence on RX port.");
         }
     return encoded;
 }
 
 bool GpsModule::hasFix() {
-    // Uznajemy FIX za ważny, jeśli biblioteka mówi isValid ORAZ dane są świeże (np. < 5 sek)
-    // TinyGPSPlus location.age() zwraca wiek w ms od ostatniej aktualizacji
+    // We consider FIX valid if library says isValid AND data is fresh (e.g. < 5 sec)
+    // TinyGPSPlus location.age() returns age in ms since last update
     if (!_gps.location.isValid()) return false;
     return (_gps.location.age() < 5000);
 }
@@ -96,9 +100,9 @@ bool GpsModule::isTimeAvailable() {
 uint64_t GpsModule::getUnixTime() {
     if (!isTimeAvailable()) return 0;
 
-    // Pobranie komponentów czasu
+    // Get time components
     int year = _gps.date.year();
-    // Obsługa formatu roku (biblioteka zwykle zwraca pełny rok, ale dla pewności)
+    // Handle year format (library usually returns full year, but just in case)
     if (year < 100) year += 2000; 
     
     struct tm t = {0};
@@ -110,14 +114,14 @@ uint64_t GpsModule::getUnixTime() {
     t.tm_sec  = _gps.time.second();
     t.tm_isdst = 0;
 
-    // Ustawienie strefy czasowej na UTC dla mktime
+    // Set timezone to UTC for mktime
     const char* oldtz = getenv("TZ");
     setenv("TZ", "UTC0", 1);
     tzset();
 
     time_t secs = mktime(&t);
 
-    // Przywrócenie strefy (dla porządku w reszcie systemu)
+    // Restore timezone (for system order)
     if (oldtz) setenv("TZ", oldtz, 1);
     else unsetenv("TZ");
     tzset();
@@ -125,16 +129,4 @@ uint64_t GpsModule::getUnixTime() {
     if (secs <= 0) return 0;
 
     return (uint64_t)secs * 1000ULL;
-}
-
-void GpsModule::logStatus(bool gpsOk) {
-    if (gpsOk && hasFix()) {
-        Serial.printf("[GPS] Fix acquired! Lat: %f, Lon: %f\n", _gps.location.lat(), _gps.location.lng());
-    } else {
-        if (!gpsOk) {
-            Serial.println("[GPS] Error: Module not responding");
-        } else {
-            Serial.println("[GPS] No fix acquired");
-        }
-    }
 }

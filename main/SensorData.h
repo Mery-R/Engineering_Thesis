@@ -23,7 +23,8 @@
     XX(uint64_t, ltr_ts,                   "ltr_ts",                   false, true) \
     XX(uint64_t, lcr_ts,                   "lcr_ts",                   false, true) \
     XX(uint8_t,  ec,                       "ec",                       true,  true) \
-    XX(bool,     tb_sent,                  "tb_sent",                  false, true)
+    XX(bool,     tb_sent,                  "tb_sent",                  false, true) \
+    XX(int,      rssi,                     "rssi",                     true,  true)
 
     //X-Macro fields
     //Timestamp
@@ -39,6 +40,7 @@
     //Last CAN message received timestamp
     //Error codes
     //ThingsBoard data flag
+    //RSSI (Signal Strength)
 
 // SensorData structure definition
 struct SensorData {

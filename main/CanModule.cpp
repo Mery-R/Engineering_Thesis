@@ -2,6 +2,10 @@
 
 CanModule::CanModule(int rxPin, int txPin) : _rxPin(rxPin), _txPin(txPin), _isInitialized(false) {}
 
+// -----------------------------------------------------
+// --------------- Public Methods ----------------------
+// -----------------------------------------------------
+
 bool CanModule::begin() {
     twai_general_config_t g_config = TWAI_GENERAL_CONFIG_DEFAULT((gpio_num_t)_txPin, (gpio_num_t)_rxPin, TWAI_MODE_NORMAL);
     twai_timing_config_t t_config = TWAI_TIMING_CONFIG_500KBITS();

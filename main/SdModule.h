@@ -1,36 +1,31 @@
-#ifndef SDMODULE_H
-#define SDMODULE_H
-
+#pragma once
 #include <SD.h>
 #include <ArduinoJson.h>
+#include <freertos/semphr.h>
 #include "SensorData.h"
 #include "TimeManager.h"
-#include <freertos/semphr.h>
 
 extern SemaphoreHandle_t sdMutex; // Global variable from main.ino
 
+// SD Card Module for logging data
 class SdModule {
 public:
     SdModule(int csPin);
-    
+
     // Integrated initialization and state check
     bool ensureReady(bool force = false);
-    
+
+    // Checks if SD is ready
+    bool isReady() const;
+
     // Archiving
     bool logToArchive(const SensorData* batch, int count);
+    String getLatestArchiveFilename();
 
     // Pending (Offline buffer)
     bool logToPending(const SensorData* batch, int count);
-    
-    // CHANGE: Removed 'offset' parameter, as we always read from the beginning (FIFO)
-    int readPendingBatch(JsonArray &outArray, int maxItems);
-    
-    // NEW FUNCTION: Removes 'count' first lines from the pending file
-    bool removeFirstRecords(int count);
-    
-    bool clearPending(); // Deletes the entire file
-
-    bool isReady() const;
+    int readPendingBatch(JsonArray &outArray, int maxItems); // Reads pending data (FIFO)
+    bool removeFirstRecords(int count); // Removes 'count' first lines from the pending file
 
 private:
     int _csPin;
@@ -41,10 +36,7 @@ private:
     const char* _pendingFilename = "/pending.jsonl";
     const size_t MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB limit
 
-    String generateArchiveFilename();
-    void rotateArchiveFile();
-    void checkArchiveSizeAndRotate();
-    String getLatestArchiveFilename();
+    String generateArchiveFilename(); // Generates archive filename based on date
+    void rotateArchiveFile(); // Rotates (creates new) archive file
+    void checkArchiveSizeAndRotate(); // Checks if rotation is needed
 };
-
-#endif

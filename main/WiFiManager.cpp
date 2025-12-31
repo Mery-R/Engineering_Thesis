@@ -5,13 +5,17 @@ WiFiManager::WiFiManager(const std::vector<WiFiConfig>& configs)
 {
 }
 
+// -----------------------------------------------------
+// --------------- Public Methods ----------------------
+// -----------------------------------------------------
+
 void WiFiManager::begin() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect(true);
 
     Serial.println("[WiFi] Initialized");
 
-    // Rejestracja eventów ESP32
+    // Register ESP32 events
     esp_event_loop_create_default();
 
     esp_event_handler_instance_register(
@@ -42,25 +46,10 @@ void WiFiManager::startScan() {
         sn.ssid = WiFi.SSID(i);
         sn.rssi = WiFi.RSSI(i);
         _scanned.push_back(sn);
-        if (debug) Serial.printf("  %s (%d dBm)\n", sn.ssid.c_str(), sn.rssi);
+        if (_debug) Serial.printf("  %s (%d dBm)\n", sn.ssid.c_str(), sn.rssi);
     }
 
     if (n == 0) Serial.println("[WiFi] No networks found");
-}
-
-const WiFiConfig* WiFiManager::chooseBestAP() {
-    const WiFiConfig* best = nullptr;
-    int bestRSSI = -1000;
-
-    for (auto& cfg : _configs) {
-        for (auto& sn : _scanned) {
-            if (sn.ssid == cfg.ssid && sn.rssi > bestRSSI) {
-                bestRSSI = sn.rssi;
-                best = &cfg;
-            }
-        }
-    }
-    return best;
 }
 
 bool WiFiManager::connectToBest() {
@@ -87,4 +76,23 @@ void WiFiManager::disconnect() {
 
 bool WiFiManager::isConnected() const {
     return WiFi.status() == WL_CONNECTED;
+}
+
+// -----------------------------------------------------
+// --------------- Private Methods ---------------------
+// -----------------------------------------------------
+
+const WiFiConfig* WiFiManager::chooseBestAP() {
+    const WiFiConfig* best = nullptr;
+    int bestRSSI = -1000;
+
+    for (auto& cfg : _configs) {
+        for (auto& sn : _scanned) {
+            if (sn.ssid == cfg.ssid && sn.rssi > bestRSSI) {
+                bestRSSI = sn.rssi;
+                best = &cfg;
+            }
+        }
+    }
+    return best;
 }

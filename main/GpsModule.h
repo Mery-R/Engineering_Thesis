@@ -1,12 +1,10 @@
-#ifndef GPS_MODULE_H
-#define GPS_MODULE_H
-
+#pragma once
 #include <Arduino.h>
 #include <TinyGPSPlus.h>
 #include <HardwareSerial.h>
 #include <time.h>
 
-// Struktura pomocnicza do zwracania kompletu danych
+// Helper structure for returning a complete set of data
 struct GpsDataPacket {
     double lat;
     double lon;
@@ -17,43 +15,24 @@ struct GpsDataPacket {
     bool valid;
 };
 
+// GPS Module (Quectel L80 / PAIR commands)
 class GpsModule {
 public:
-    // Konstruktor: przyjmuje numery pinów, baudrate i numer UART (domyślnie 1 dla ESP32)
+    // Constructor: accepts pin numbers, baudrate and UART number (default 1 for ESP32)
     GpsModule(int rxPin, int txPin, long baudRate = 115200, int uartNr = 1);
 
-    // Inicjalizacja portu szeregowego
-    void begin();
+    void begin(); // Serial port initialization
+    void wake(); // Wake up module (Quectel PAIR commands)
+    void sleep(); // Sleep module (Quectel PAIR commands)
 
-    // Wybudzanie modułu (Quectel PAIR commands)
-    void wake();
+    int available(); // Checks if data available in serial buffer
+    bool process(); // Main read function - processes incoming data
 
-    // Usypianie modułu (Quectel PAIR commands)
-    void sleep();
+    bool hasFix(); // Checks if we have a current fix
+    GpsDataPacket getData(); // Returns structure with data
 
-    // Główna funkcja odczytu - powinna być wołana w pętli przez określony czas
-    // Zwraca true, jeśli odebrano i zdekodowano poprawne zdanie NMEA
-    // Zwraca liczbę dostępnych bajtów w buforze serial
-    int available();
-
-    // Główna funkcja odczytu - powinna być wołana w pętli przez określony czas
-    // Zwraca true, jeśli odebrano i zdekodowano poprawne zdanie NMEA
-    bool process();
-
-    // Sprawdza, czy mamy aktualny FIX (na podstawie valid flag i czasu ostatniego odczytu)
-    bool hasFix();
-
-    // Zwraca strukturę z danymi
-    GpsDataPacket getData();
-
-    // Zwraca czas uniksowy w ms (zsynchronizowany z GPS)
-    uint64_t getUnixTime();
-
-    // Sprawdza czy czas jest dostępny
-    bool isTimeAvailable();
-
-    // Loguje status GPS (sukces/błąd) na Serial
-    void logStatus(bool gpsOk);
+    bool isTimeAvailable(); // Checks if time is available
+    uint64_t getUnixTime(); // Returns Unix time in ms (synchronized with GPS)
 
 private:
     HardwareSerial _gpsSerial;
@@ -66,13 +45,8 @@ private:
     unsigned long _lastFixTime;
     bool _fixAcquired;
     
-    // Stałe konfiguracyjne
     const unsigned long GPS_DATA_TIMEOUT_MS = 5000; 
     const bool DEBUG_RAW = false;
 
-    // Helper do sumy kontrolnej (opcjonalny, bo TinyGPS+ sprawdza sumy, 
-    // ale potrzebny jeśli chcemy ręcznie weryfikować komunikaty PAIR)
-    bool validateChecksum();
+    bool validateChecksum(); // Checksum helper
 };
-
-#endif // GPS_MODULE_H

@@ -276,6 +276,8 @@ void CoordinatorTask(void* pvParameters) {
         // Get timestamp
         data.ts = TimeManager::getTimestampMs();
         data.ts_source = TimeManager::getTimeSource();
+        // Get SSI (Signal Strength)
+        data.rssi = WiFi.RSSI();
 
         // Make a snapshot
         SensorData snapshot = data;
@@ -544,7 +546,11 @@ void TaskDataSync(void* pvParameters) {
         if (WiFi.status() == WL_CONNECTED) {
             if (!tbClient.isConnected()) {
 
-                tbClient.connect();
+                if (tbClient.connect()) {
+                    // Successful connection -> Send static attributes
+                    tbClient.sendClientAttribute("ssid", WiFi.SSID().c_str());
+                    tbClient.sendClientAttribute("ip", WiFi.localIP().toString().c_str());
+                }
 
                 esp_task_wdt_reset();
             }
@@ -683,7 +689,9 @@ void TaskSleep(void* pvParameters) {
 
         Serial.println("[SLEEP] Button released. Initiating sleep sequence...");
 
-        //gpsModule.sleep();
+        // if(ENABLE_GPS) gpsModule.sleep();
+        // if(ENABLE_CAN) canModule.sleep();
+        // if(ENABLE_TEMP) tempSensor.stop();
 
         sleepRequestActive = true;
 

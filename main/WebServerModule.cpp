@@ -1,9 +1,15 @@
 #include "WebServerModule.h"
 #include <ArduinoJson.h>
+#include "SdModule.h"
 
 extern SemaphoreHandle_t sdMutex;
+extern SdModule sdModule;
 
 WebServer server(80);
+
+// -----------------------------------------------------
+// --------------- Private Methods / Callbacks ---------
+// -----------------------------------------------------
 
 void handleRoot() {
     String html = R"rawliteral(
@@ -31,7 +37,7 @@ void handleRoot() {
             var map = L.map('map').setView([0,0], 2);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-            var coordsGlobal = []; // przechowuje aktualne punkty
+            var coordsGlobal = []; // stores current points
 
             function updateMap() {
                 fetch('/gpsdata')
@@ -56,7 +62,7 @@ void handleRoot() {
 
                     var pointLimit = parseInt(document.getElementById('pointCount').value) || coords.length;
                     coords = coords.slice(-pointLimit);
-                    coordsGlobal = coords; // zapisujemy globalnie do przycisku reset
+                    coordsGlobal = coords; // save globally for reset button
 
                     if(coords.length > 0){
                         map.eachLayer(function(layer){
@@ -73,14 +79,14 @@ void handleRoot() {
                         L.polyline(coords, {color:'black'}).addTo(map);
                     }
                 })
-                .catch(err => console.error("Błąd fetch GPS:", err));
+                .catch(err => console.error("Fetch GPS error:", err));
             }
 
-            // odśwież co 3 sekundy
+            // refresh every 3 seconds
             setInterval(updateMap, 3000);
             updateMap();
 
-            // reset widoku przy kliknięciu
+            // reset view on click
             document.getElementById('resetView').addEventListener('click', function(){
                 if(coordsGlobal.length > 0){
                     map.fitBounds(coordsGlobal);
@@ -96,20 +102,22 @@ void handleRoot() {
 
 void handleGPSData() {
     // Support both /data_log.txt (JSON lines) and /data.csv (legacy)
-    const char* targetFile = "/data.json";
+    String targetFile = "";
     
     if (sdMutex) xSemaphoreTake(sdMutex, portMAX_DELAY);
 
-    if (!SD.exists(targetFile)) {
+    targetFile = sdModule.getLatestArchiveFilename();
+
+    if (targetFile == "") {
         if (sdMutex) xSemaphoreGive(sdMutex);
-        server.send(404, "text/plain", "Brak danych GPS");
+        server.send(404, "text/plain", "No GPS data (File not found)");
         return;
     }
 
     File file = SD.open(targetFile);
     if(!file){
         if (sdMutex) xSemaphoreGive(sdMutex);
-        server.send(500, "text/plain", "Nie można otworzyć pliku");
+        server.send(500, "text/plain", "Cannot open file");
         return;
     }
 
@@ -119,9 +127,13 @@ void handleGPSData() {
     if (sdMutex) xSemaphoreGive(sdMutex);
 }
 
+// -----------------------------------------------------
+// --------------- Public Methods ----------------------
+// -----------------------------------------------------
+
 void startWebServer(uint16_t port) {
     server.on("/", handleRoot);
     server.on("/gpsdata", handleGPSData);
     server.begin();
-    Serial.printf("[WEB] Serwer wystartował na porcie %d\n", port);
+    Serial.printf("[WEB] Server started on port %d\n", port);
 }

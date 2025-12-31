@@ -17,14 +17,9 @@ ThingsBoardClient::ThingsBoardClient(const char* server, int port,
     _instance = this;
 }
 
-ThingsBoardClient* ThingsBoardClient::_instance = nullptr;
-
-void ThingsBoardClient::onMqttMessage(char* topic, byte* payload, unsigned int length) {
-    if (_instance) {
-        _instance->processMessage(topic, payload, length);
-    }
-}
-
+// -----------------------------------------------------
+// --------------- Public Methods ----------------------
+// -----------------------------------------------------
 
 bool ThingsBoardClient::connect() {
     _mqttClient.setServer(_server, _port);
@@ -42,13 +37,13 @@ bool ThingsBoardClient::connect() {
             Serial.printf("[TB] MQTT Buffer Size: %d\n", _mqttClient.getBufferSize());
             
             _mqttClient.setCallback(onMqttMessage);
-            // _mqttClient.subscribe("v1/devices/me/rpc/request/+"); // Removed
             _mqttClient.subscribe("v1/devices/me/attributes");
             _mqttClient.subscribe("v1/devices/me/attributes/response/+");
             
             return true;
         } else {
-            Serial.printf("[TB] MQTT connection failed. State: %d\n", _mqttClient.state());
+            int state = _mqttClient.state();
+            Serial.printf("[TB] MQTT connection failed. State: %d (%s)\n", state, getMqttStateDescription(state));
             return false;
         }
     }
@@ -64,11 +59,6 @@ void ThingsBoardClient::loop() {
     _mqttClient.loop();
 }
 
-
-void ThingsBoardClient::setAttributesCallback(void (*callback)(const JsonObject &data)) {
-    _attributesCallback = callback;
-}
-
 void ThingsBoardClient::requestSharedAttributes() {
     if (!_mqttClient.connected()) return;
     // Request specific shared keys
@@ -77,16 +67,77 @@ void ThingsBoardClient::requestSharedAttributes() {
     Serial.println("[TB] Requested shared attributes");
 }
 
+void ThingsBoardClient::setAttributesCallback(void (*callback)(const JsonObject &data)) {
+    _attributesCallback = callback;
+}
+
+int ThingsBoardClient::sendBatchDirect(JsonArray &batch) {
+    if (batch.size() == 0) return 0;
+
+    String payload;
+    // Serialization to String (required by PubSubClient)
+    if (serializeJson(batch, payload) == 0) {
+        Serial.println("[TB][ERR] Serialization failed (Out of memory?)");
+        return 0;
+    }
+
+    // Automatic reconnection if lost
+    if (!_mqttClient.connected()) {
+        if (!connect()) {
+            // Serial.println("[TB][ERR] Cannot send - MQTT disconnected");
+            return 0;
+        }
+    }
+
+    // Increase MQTT buffer if payload is large
+    if (payload.length() > _mqttClient.getBufferSize()) {
+        _mqttClient.setBufferSize(payload.length() + 100);
+    }
+
+    // Publish to telemetry topic
+    if (_mqttClient.publish("v1/devices/me/telemetry", payload.c_str())) {
+        return batch.size();
+    } else {
+        Serial.println("[TB][ERR] Publish failed!");
+        return 0;
+    }
+}
+
+void ThingsBoardClient::sendClientAttribute(const char* key, const char* value) {
+    if (!_mqttClient.connected()) return;
+
+    String topic = "v1/devices/me/attributes";
+    
+    // Create JSON payload: {"key": "value"}
+    JsonDocument doc;
+    doc[key] = value;
+    
+    String payload;
+    serializeJson(doc, payload);
+
+    if (_mqttClient.publish(topic.c_str(), payload.c_str())) {
+        Serial.printf("[TB] Sent client attribute: %s = %s\n", key, value);
+    } else {
+        Serial.printf("[TB] Failed to send attribute: %s\n", key);
+    }
+}
+
+// -----------------------------------------------------
+// --------------- Private Methods ---------------------
+// -----------------------------------------------------
+
+ThingsBoardClient* ThingsBoardClient::_instance = nullptr;
+
+void ThingsBoardClient::onMqttMessage(char* topic, byte* payload, unsigned int length) {
+    if (_instance) {
+        _instance->processMessage(topic, payload, length);
+    }
+}
+
 void ThingsBoardClient::processMessage(char* topic, byte* payload, unsigned int length) {
     // Basic check to avoid buffer overflow
     if (length > 4096) return;
-    
-    // Create a temporary buffer and copy payload
-    // (ArduinoJson needs a writable buffer or a String/const char*)
-    // We can just parse it directly if we cast nicely or use a transient buffer
-    // But payload is byte*, treating as string requires null termination if not careful
-    // Safest is to use JsonDocument with the pointer and length
-    
+
     JsonDocument doc;
     DeserializationError error = deserializeJson(doc, payload, length);
 
@@ -98,7 +149,7 @@ void ThingsBoardClient::processMessage(char* topic, byte* payload, unsigned int 
 
     String topicStr = String(topic);
 
-    // 1. Attributes (Push or Response)
+    // Attributes (Push or Response)
     // Push: v1/devices/me/attributes
     // Response: v1/devices/me/attributes/response/+
     if (topicStr.startsWith("v1/devices/me/attributes")) {
@@ -114,58 +165,20 @@ void ThingsBoardClient::processMessage(char* topic, byte* payload, unsigned int 
             _attributesCallback(data);
         }
     }
+}
 
-    }
-
-
-// -------------------
-// Wysyła dane bezpośrednio z JsonArray (z ringBuffer) do ThingsBoard
-// Format danych (JSON):
-// [
-//   {
-//     "lat": double,
-//     "lon": double,
-//     "elevation": double,
-//     "vel": double,
-//     "temp": float,
-//     "timestamp": uint64 (ms),
-//     "time_source": int,
-//     "last_gps_fix_timestamp": uint64 (ms),
-//     "last_temp_read_timestamp": uint64 (ms),
-//     "error_code": uint8
-//   },
-//   ...
-// ]
-int ThingsBoardClient::sendBatchDirect(JsonArray &batch) {
-    if (batch.size() == 0) return 0;
-
-    // USUNIĘTO: formatTelemetry(batch) - jest zbędne, SensorData.h robi to lepiej.
-
-    String payload;
-    // Serializacja do Stringa (wymagane przez PubSubClient)
-    if (serializeJson(batch, payload) == 0) {
-        Serial.println("[TB][ERR] Serialization failed (Out of memory?)");
-        return 0;
-    }
-
-    // Automatyczne wznawianie połączenia, jeśli zerwane
-    if (!_mqttClient.connected()) {
-        if (!connect()) {
-            // Serial.println("[TB][ERR] Cannot send - MQTT disconnected");
-            return 0;
-        }
-    }
-
-    // Zwiększ bufor MQTT, jeśli payload jest duży
-    if (payload.length() > _mqttClient.getBufferSize()) {
-        _mqttClient.setBufferSize(payload.length() + 100);
-    }
-
-    // Wysyłka na topic telemetryczny
-    if (_mqttClient.publish("v1/devices/me/telemetry", payload.c_str())) {
-        return batch.size();
-    } else {
-        Serial.println("[TB][ERR] Publish failed (Packet too big?)");
-        return 0;
+const char* ThingsBoardClient::getMqttStateDescription(int state) {
+    switch (state) {
+        case -4: return "MQTT_CONNECTION_TIMEOUT";
+        case -3: return "MQTT_CONNECTION_LOST";
+        case -2: return "MQTT_CONNECT_FAILED";
+        case -1: return "MQTT_DISCONNECTED";
+        case 0:  return "MQTT_CONNECTED";
+        case 1:  return "MQTT_CONNECT_BAD_PROTOCOL";
+        case 2:  return "MQTT_CONNECT_BAD_CLIENT_ID";
+        case 3:  return "MQTT_CONNECT_UNAVAILABLE";
+        case 4:  return "MQTT_CONNECT_BAD_CREDENTIALS";
+        case 5:  return "MQTT_CONNECT_UNAUTHORIZED";
+        default: return "UNKNOWN";
     }
 }
