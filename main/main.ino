@@ -84,9 +84,9 @@ volatile int MQTT_KEEPALIVE_TIMEOUT = 2000; // MQTT keep-alive timeout (ms) (can
 
 // Buffer settings (volatile for dynamic update)
 volatile int BUFFER_CAPACITY = 60;          // Buffer capacity (can be changed via ThingsBoard)
-volatile int BATCH_SIZE = 2;                // Batch size (can be changed via ThingsBoard)
-volatile int MIN_BATCH_SIZE = 2;            // Minimum batch size (can be changed via ThingsBoard)
-#define MAX_BATCH_SIZE 20                   // Maximum batch size (hard limit)
+volatile int SEND_BATCH_SIZE = 2;       // Batch size (how many records to send at once)
+volatile int BUFFER_SEND_THRESHOLD = 2; // Threshold to trigger sending (or stop background tasks)
+#define MAX_SEND_BATCH_SIZE 20          // Maximum batch size (hard limit)
 
 // Time sync setting (volatile for dynamic update)
 volatile bool REQUIRE_VALID_TIME = true;    // Time sync setting (can be changed via ThingsBoard)
@@ -196,15 +196,15 @@ void attributesCallback(const JsonObject &data) {
         Delay_WIFI = data["Delay_WIFI"];
         Serial.printf("Updated Delay_WIFI: %d\n", Delay_WIFI);
     }
-    if (data.containsKey("BATCH_SIZE")) {
-        int val = data["BATCH_SIZE"];
-        if (val > MAX_BATCH_SIZE) val = MAX_BATCH_SIZE;
-        BATCH_SIZE = val;
-        Serial.printf("Updated BATCH_SIZE: %d\n", BATCH_SIZE);
+    if (data.containsKey("SEND_BATCH_SIZE")) {
+        int val = data["SEND_BATCH_SIZE"];
+        if (val > MAX_SEND_BATCH_SIZE) val = MAX_SEND_BATCH_SIZE;
+        SEND_BATCH_SIZE = val;
+        Serial.printf("Updated SEND_BATCH_SIZE: %d\n", SEND_BATCH_SIZE);
     }
-    if (data.containsKey("MIN_BATCH_SIZE")) {
-        MIN_BATCH_SIZE = data["MIN_BATCH_SIZE"];
-        Serial.printf("Updated MIN_BATCH_SIZE: %d\n", MIN_BATCH_SIZE);
+    if (data.containsKey("BUFFER_SEND_THRESHOLD")) {
+        BUFFER_SEND_THRESHOLD = data["BUFFER_SEND_THRESHOLD"];
+        Serial.printf("Updated BUFFER_SEND_THRESHOLD: %d\n", BUFFER_SEND_THRESHOLD);
     }
     if (data.containsKey("BUFFER_CAPACITY")) {
         BUFFER_CAPACITY = data["BUFFER_CAPACITY"];
@@ -569,13 +569,13 @@ void TaskDataSync(void* pvParameters) {
 
         // --- Process New Data (RAM Queue) ---
         // Flush the RAM buffer to prevent overflow
-        while (uxQueueMessagesWaiting(dataQueue) >= MIN_BATCH_SIZE) {
+        while (uxQueueMessagesWaiting(dataQueue) >= BUFFER_SEND_THRESHOLD) {
             esp_task_wdt_reset();
 
             // Pop data from Queue
             int count = 0;
-            // Limit batch size to either BATCH_SIZE or MAX available
-            int limit = (BATCH_SIZE < MAX_BATCH_SIZE) ? BATCH_SIZE : MAX_BATCH_SIZE;
+            // Limit batch size to either SEND_BATCH_SIZE or MAX available
+            int limit = (SEND_BATCH_SIZE < MAX_SEND_BATCH_SIZE) ? SEND_BATCH_SIZE : MAX_SEND_BATCH_SIZE;
 
             while (count < limit && uxQueueMessagesWaiting(dataQueue) > 0) {
                 if (xQueueReceive(dataQueue, &batch[count], 0) == pdTRUE) {
@@ -628,14 +628,14 @@ void TaskDataSync(void* pvParameters) {
         // Only if online AND RAM queue is empty
         if (tbClient.isConnected() && uxQueueMessagesWaiting(dataQueue) == 0) {
         
-            while (uxQueueMessagesWaiting(dataQueue) < MIN_BATCH_SIZE) {
+            while (uxQueueMessagesWaiting(dataQueue) < BUFFER_SEND_THRESHOLD) {
                 esp_task_wdt_reset();
 
                 JsonDocument doc;
                 JsonArray arr = doc.to<JsonArray>();
 
                 // Read from SD
-                int readCount = sdModule.readPendingBatch(arr, BATCH_SIZE);
+                int readCount = sdModule.readPendingBatch(arr, SEND_BATCH_SIZE);
 
                 if (readCount == 0) break; // No more pending data
 

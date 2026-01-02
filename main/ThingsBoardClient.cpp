@@ -62,7 +62,7 @@ void ThingsBoardClient::loop() {
 void ThingsBoardClient::requestSharedAttributes() {
     if (!_mqttClient.connected()) return;
     // Request specific shared keys
-    const char* payload = "{\"sharedKeys\":\"BATCH_SIZE,Delay_MAIN,Delay_WIFI,MIN_BATCH_SIZE,REQUIRE_VALID_TIME,BUFFER_CAPACITY\"}";
+    const char* payload = "{\"sharedKeys\":\"SEND_BATCH_SIZE,Delay_MAIN,Delay_WIFI,BUFFER_SEND_THRESHOLD,REQUIRE_VALID_TIME,BUFFER_CAPACITY\"}";
     _mqttClient.publish("v1/devices/me/attributes/request/1", payload);
     Serial.println("[TB] Requested shared attributes");
 }
