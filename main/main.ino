@@ -505,15 +505,18 @@ void TaskCAN(void* pvParameters) {
         // Get message
         if (canModule.getMessage(msg)) {
             
-            // Scale speed
-            float vel = canModule.scaleSpeed(msg);
+            // Read vehicle speed (msg, id, startBit, length, isBigEndian, factor)
+            float vehicle_speed = canModule.readSignal(msg, 0x123, 0, 2, true, 0.1f);
+            
+            // Read engine speed (msg, id, startBit, length, isBigEndian, factor)
+            //float engine_speed = canModule.readSignal(msg, 0x123, 2, 2, true, 0.1f);
             
             // If valid speed
-            if (vel >= 0) {
+            if (vehicle_speed >= 0) {
                 
                 // Write data
                 xSemaphoreTake(dataSem, portMAX_DELAY);
-                data.can_vel = vel;
+                data.can_vel = vehicle_speed;
                 data.lcr_ts = TimeManager::getTimestampMs();
                 xSemaphoreGive(dataSem);
 

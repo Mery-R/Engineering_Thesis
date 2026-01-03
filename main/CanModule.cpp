@@ -36,15 +36,46 @@ bool CanModule::getMessage(twai_message_t &message) {
     return (res == ESP_OK);
 }
 
-float CanModule::scaleSpeed(const twai_message_t &message) {
-    // Placeholder logic for scaling speed from CAN frame.
-    // Assuming ID 0x123 contains speed in first 2 bytes (uint16_t), big-endian.
-    // Scale factor example: 0.1 (e.g. 1000 = 100.0 km/h)
-    if (message.identifier == 0x123 && message.data_length_code >= 2) {
-        uint16_t rawSpeed = (message.data[0] << 8) | message.data[1];
-        return (float)rawSpeed * 0.1f;
+float CanModule::readSignal(const twai_message_t &message, uint32_t id, int startBit, int length, bool isBigEndian, float factor) {
+    if (message.identifier != id) {
+        return -1.0f; // Wrong ID
     }
-    return -1.0f; // Indicate no speed found or invalid ID
+
+    uint64_t rawValue = 0;
+
+    if (isBigEndian) {
+        // Big Endian (Motorola-ish / Network Order)
+        // Treated as a stream of bits MSB first:
+        // Index 0 = Byte0.Bit7, Index 7 = Byte0.Bit0, Index 8 = Byte1.Bit7...
+        // We read 'length' bits starting from 'startBit' and shift them into rawValue.
+        for (int i = 0; i < length; i++) {
+            int pos = startBit + i;
+            int byteIdx = pos / 8;
+            int bitIdx = 7 - (pos % 8); // 0->7, 7->0
+
+            if (byteIdx < message.data_length_code) {
+                int bit = (message.data[byteIdx] >> bitIdx) & 1;
+                rawValue = (rawValue << 1) | bit;
+            }
+        }
+    } else {
+        // Little Endian (Intel)
+        // Treated as a stream of bits LSB first:
+        // Index 0 = Byte0.Bit0, Index 7 = Byte0.Bit7, Index 8 = Byte1.Bit0...
+        // We read 'length' bits starting from 'startBit' and fill rawValue from LSB up.
+        for (int i = 0; i < length; i++) {
+            int pos = startBit + i;
+            int byteIdx = pos / 8;
+            int bitIdx = pos % 8; // 0->0, 7->7
+
+            if (byteIdx < message.data_length_code) {
+                int bit = (message.data[byteIdx] >> bitIdx) & 1;
+                rawValue |= ((uint64_t)bit << i);
+            }
+        }
+    }
+
+    return (float)rawValue * factor;
 }
 
 void CanModule::stop() {

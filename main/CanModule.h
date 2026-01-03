@@ -9,7 +9,7 @@ public:
 
     bool begin(); // Initialize and start CAN
     bool getMessage(twai_message_t &message); // Receive message (non-blocking)
-    float scaleSpeed(const twai_message_t &message); // Scale speed from CAN message
+    float readSignal(const twai_message_t &message, uint32_t id, int startBit, int length, bool isBigEndian, float factor); // Generic signal extraction
     void stop(); // Stop and uninstall driver
 
 private:
