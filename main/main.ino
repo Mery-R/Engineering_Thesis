@@ -536,7 +536,7 @@ void TaskDataSync(void* pvParameters) {
     // Register Watchdog
     esp_task_wdt_add(NULL);
     
-    SensorData batch[MAX_BATCH_SIZE];
+    SensorData batch[MAX_SEND_BATCH_SIZE];
     static unsigned long lastAttrRequest = 0;
 
     for (;;) {
