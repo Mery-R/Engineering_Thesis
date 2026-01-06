@@ -1,25 +1,26 @@
 // --- Libraries ---
-#include <WiFi.h>
 #include "FS.h"
 #include "SD.h"
 #include "SPI.h"
-#include <ArduinoJson.h>
+#include <WiFi.h>
 #include <OneWire.h>
+#include <ArduinoJson.h>
 #include <DallasTemperature.h>
 #include <esp_task_wdt.h>
-#include "SensorData.h"
 #include "esp_sleep.h"
 
 // --- Modules ---
-#include "ThingsBoardClient.h"
 #include "SdModule.h"
-#include "WiFiManager.h"
-#include "WebServerModule.h"
-#include "TimeManager.h"
 #include "GpsModule.h"
 #include "CanModule.h"
+#include "SensorData.h"
+#include "WiFiManager.h"
+#include "TimeManager.h"
+#include "WebServerModule.h"
+#include "ThingsBoardClient.h"
 
-SET_TIME_BEFORE_STARTING_SKETCH_MS(5000); // Set time before starting sketch (ms)
+
+SET_TIME_BEFORE_STARTING_SKETCH_MS(2000); // Set time before starting sketch (ms)
 
 // -----------------------------------------------------
 // ---------------- WiFi & ThingsBoard -----------------
@@ -83,7 +84,7 @@ volatile int ATTR_REQUEST_INTERVAL = 300000;// Attributes request interval (ms) 
 volatile int MQTT_KEEPALIVE_TIMEOUT = 2000; // MQTT keep-alive timeout (ms) (can be changed via ThingsBoard)
 
 // Buffer settings (volatile for dynamic update)
-volatile int BUFFER_CAPACITY = 60;          // Buffer capacity (can be changed via ThingsBoard)
+volatile int BUFFER_CAPACITY = 60;          // Buffer capacity
 volatile int SEND_BATCH_SIZE = 2;       // Batch size (how many records to send at once)
 volatile int BUFFER_SEND_THRESHOLD = 2; // Threshold to trigger sending (or stop background tasks)
 #define MAX_SEND_BATCH_SIZE 20          // Maximum batch size (hard limit)
@@ -272,6 +273,8 @@ void CoordinatorTask(void* pvParameters) {
                 canDone ? "" : "CAN");
         }
 
+        TimeManager::updateFromGps(gpsModule.getUnixTime());
+        
         xSemaphoreTake(dataSem, portMAX_DELAY);
         // Get timestamp
         data.ts = TimeManager::getTimestampMs();
@@ -282,8 +285,6 @@ void CoordinatorTask(void* pvParameters) {
         // Make a snapshot
         SensorData snapshot = data;
         xSemaphoreGive(dataSem);
-
-        TimeManager::updateFromGps(gpsModule.getUnixTime());
 
         // Check if time is synchronized before storing data
         if (!TimeManager::isSynchronized() && REQUIRE_VALID_TIME) {
@@ -314,10 +315,11 @@ void TaskWiFi(void* pvParameters) {
 
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("[WiFi] WiFi lost/disconnected. Attempting reconnect...");
-
+            esp_task_wdt_reset();  
             if (wifiManager.connectToBest()) {
                  // Clear any notifications received
                  ulTaskNotifyTake(pdTRUE, 0);
+                 esp_task_wdt_reset();
             }
             else {
                 Serial.println("[WiFi] Failed to reconnect.");
@@ -538,6 +540,8 @@ void TaskDataSync(void* pvParameters) {
     
     SensorData batch[MAX_SEND_BATCH_SIZE];
     static unsigned long lastAttrRequest = 0;
+    static unsigned long lastTbSendTime = 0;
+    const unsigned long TB_SEND_INTERVAL = 2000; // 2 seconds interval
 
     for (;;) {
         // Wait for notification or timeout
@@ -594,6 +598,12 @@ void TaskDataSync(void* pvParameters) {
             // Try to send via MQTT
             bool sent = false;
             if (tbClient.isConnected()) {
+                // Rate limiting check
+                if (millis() - lastTbSendTime < TB_SEND_INTERVAL) {
+                    unsigned long waitTime = TB_SEND_INTERVAL - (millis() - lastTbSendTime);
+                    vTaskDelay(pdMS_TO_TICKS(waitTime));
+                }
+
                 JsonDocument doc;
                 JsonArray arr = doc.to<JsonArray>();
                 for (int i = 0; i < count; ++i) {
@@ -603,6 +613,7 @@ void TaskDataSync(void* pvParameters) {
                 
                 if (tbClient.sendBatchDirect(arr)) {
                     sent = true;
+                    lastTbSendTime = millis(); // Update last send time
                     Serial.printf("[TB] Sent %d records from Buffer.\n", count);
                 }
             }
@@ -629,7 +640,7 @@ void TaskDataSync(void* pvParameters) {
 
         // --- Process Old Data (Pending File) ---
         // Only if online AND RAM queue is empty
-        if (tbClient.isConnected() && uxQueueMessagesWaiting(dataQueue) == 0) {
+        if (tbClient.isConnected()) {
         
             while (uxQueueMessagesWaiting(dataQueue) < BUFFER_SEND_THRESHOLD) {
                 esp_task_wdt_reset();
@@ -642,8 +653,15 @@ void TaskDataSync(void* pvParameters) {
 
                 if (readCount == 0) break; // No more pending data
 
+                // Rate limiting check
+                if (millis() - lastTbSendTime < TB_SEND_INTERVAL) {
+                    unsigned long waitTime = TB_SEND_INTERVAL - (millis() - lastTbSendTime);
+                    vTaskDelay(pdMS_TO_TICKS(waitTime));
+                }
+
                 // Try to send
                 if (tbClient.sendBatchDirect(arr)) {
+                    lastTbSendTime = millis(); // Update last send time
                     Serial.printf("[TB] Sent %d records from Pending.\n", readCount);
                     
                     // Success: Clear the pending file
@@ -653,7 +671,8 @@ void TaskDataSync(void* pvParameters) {
                     break; 
                 }
                 
-                vTaskDelay(pdMS_TO_TICKS(2000)); // Yield to other tasks
+                // Small yield is still good for system responsiveness, but strict delay is handled by rate limiter above
+                vTaskDelay(pdMS_TO_TICKS(10)); 
             }
         }
 
@@ -728,7 +747,7 @@ void setup() {
     initWatchdog(WDT_TIMEOUT);
     
     // GPIO
-    pinMode(WAKE_BUTTON_PIN, INPUT_PULLUP);
+    //pinMode(WAKE_BUTTON_PIN, INPUT_PULLUP);
     pinMode(LED_WiFi, OUTPUT);
     pinMode(LED_GPS, OUTPUT);
     pinMode(LED_SD, OUTPUT);
@@ -793,7 +812,7 @@ void setup() {
     xTaskCreate(TaskSleep, "Sleep", 4096, NULL, 5, &sleepTaskHandle);
 
     // Interrupts
-    attachInterrupt(digitalPinToInterrupt(WAKE_BUTTON_PIN), isrButton, FALLING);
+    //attachInterrupt(digitalPinToInterrupt(WAKE_BUTTON_PIN), isrButton, FALLING);
     
     Serial.println("[SETUP] System Ready.");
     vTaskDelete(NULL);

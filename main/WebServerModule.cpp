@@ -23,12 +23,33 @@ void handleRoot() {
         <style>
             #map { height: 100vh; width: 100%; margin:0; padding:0; }
             body { margin:0; padding:0; }
+            .controls {
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                z-index: 1000;
+                background: white;
+                padding: 10px;
+                border-radius: 5px;
+                box-shadow: 0 0 10px rgba(0,0,0,0.2);
+                font-family: sans-serif;
+                display: flex;
+                flex-direction: column;
+                gap: 5px;
+            }
+            .controls input, .controls button {
+                padding: 5px;
+                font-size: 14px;
+            }
         </style>
     </head>
     <body>
-        <div style="position:absolute;top:10px;right:10px;z-index:1000;background:white;padding:5px;border-radius:5px;font-size:16px;">
-            Number of points: <input type="number" id="pointCount" value="50" min="1" max="100" style="width:80px; padding:5px; font-size:16px;">
-            <button id="resetView" style="padding:8px 12px; font-size:16px; cursor:pointer;"> Reset View </button>
+        <div class="controls">
+            <label>Points: <input type="number" id="pointCount" value="50" min="1" max="500"></label>
+            <label>Start: <input type="datetime-local" id="startTime"></label>
+            <label>End: <input type="datetime-local" id="endTime"></label>
+            <button id="applyFilter">Apply Filter</button>
+            <button id="resetView">Reset Zoom</button>
         </div>
 
         <div id="map"></div>
@@ -37,61 +58,112 @@ void handleRoot() {
             var map = L.map('map').setView([0,0], 2);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(map);
 
-            var coordsGlobal = []; // stores current points
+            var allData = []; // Store parsed data
+            var layerGroup = L.layerGroup().addTo(map);
 
-            function updateMap() {
+            // Fetch data once or periodically
+            function fetchData() {
                 fetch('/gpsdata')
                 .then(response => response.text())
-                .then(data => {
-                    var lines = data.split('\n');
-                    var coords = [];
+                .then(text => {
+                    var lines = text.split('\n');
+                    allData = [];
                     lines.forEach(line => {
                         if(line && line.trim().length > 0){
                             try {
                                 var obj = JSON.parse(line);
+                                // Pre-filter valid coordinates immediately
                                 var lat = parseFloat(obj.lat);
                                 var lon = parseFloat(obj.lon);
-                                if(!isNaN(lat) && !isNaN(lon)){
-                                    coords.push([lat, lon]);
+                                // Filter out 0,0 and invalid numbers
+                                if(!isNaN(lat) && !isNaN(lon) && (Math.abs(lat) > 0.000001 || Math.abs(lon) > 0.000001)){
+                                    obj.lat = lat;
+                                    obj.lon = lon;
+                                    // Ensure ts is available (check standard fields)
+                                    // obj.ts or obj.timestamp
+                                    if(!obj.ts && obj.timestamp) obj.ts = obj.timestamp;
+                                    
+                                    allData.push(obj);
                                 }
-                            } catch(e) {
-                                // Ignore parse errors
-                            }
+                            } catch(e) { }
                         }
                     });
-
-                    var pointLimit = parseInt(document.getElementById('pointCount').value) || coords.length;
-                    coords = coords.slice(-pointLimit);
-                    coordsGlobal = coords; // save globally for reset button
-
-                    if(coords.length > 0){
-                        map.eachLayer(function(layer){
-                            if(layer instanceof L.Polyline || layer instanceof L.CircleMarker) map.removeLayer(layer);
-                        });
-
-                        coords.forEach(function(c, index){
-                            var color = 'blue';
-                            if(index === coords.length - 1) color = 'red';
-                            else if(index >= coords.length - 10) color = 'green';
-                            L.circleMarker(c, {radius:4, color:color, fillColor:color, fillOpacity:1}).addTo(map);
-                        });
-
-                        L.polyline(coords, {color:'black'}).addTo(map);
-                    }
+                    renderMap();
                 })
                 .catch(err => console.error("Fetch GPS error:", err));
             }
 
-            // refresh every 3 seconds
-            setInterval(updateMap, 3000);
-            updateMap();
+            function renderMap() {
+                layerGroup.clearLayers();
 
-            // reset view on click
+                var limit = parseInt(document.getElementById('pointCount').value) || 100;
+                var startVal = document.getElementById('startTime').value;
+                var endVal = document.getElementById('endTime').value;
+                
+                var startTs = startVal ? new Date(startVal).getTime() : 0;
+                var endTs = endVal ? new Date(endVal).getTime() : 9999999999999;
+
+                // Filter data
+                var filtered = allData.filter(d => {
+                    var t = d.ts || 0;
+                    return t >= startTs && t <= endTs;
+                });
+
+                // Apply limit (take last N points from valid set)
+                var displayData = filtered.slice(-limit);
+
+                if(displayData.length === 0) return;
+
+                var polylinePoints = [];
+
+                displayData.forEach(function(d, index){
+                    var color = 'blue';
+                    // Color logic: Last point red, recent green, others blue
+                    if(index === displayData.length - 1) color = 'red';
+                    else if(index >= displayData.length - 10) color = 'green';
+
+                    var marker = L.circleMarker([d.lat, d.lon], {
+                        radius: 4,
+                        color: color,
+                        fillColor: color,
+                        fillOpacity: 1
+                    });
+
+                    // POPUP with Time
+                    var dateStr = "Unknown Time";
+                    if(d.ts) {
+                        dateStr = new Date(d.ts).toLocaleString();
+                    }
+                    marker.bindPopup("<b>Time:</b> " + dateStr + "<br><b>Lat:</b> " + d.lat + "<br><b>Lon:</b> " + d.lon);
+                    
+                    marker.addTo(layerGroup);
+                    polylinePoints.push([d.lat, d.lon]);
+                });
+
+                if(polylinePoints.length > 0) {
+                     L.polyline(polylinePoints, {color: 'black', weight: 2}).addTo(layerGroup);
+                     // Optional: auto-fit bounds on first load or forced
+                     // map.fitBounds(polylinePoints); 
+                }
+            }
+
+            // Controls
+            document.getElementById('applyFilter').addEventListener('click', renderMap);
+            
             document.getElementById('resetView').addEventListener('click', function(){
-                if(coordsGlobal.length > 0){
-                    map.fitBounds(coordsGlobal);
+                if(allData.length > 0) {
+                    // Collect all points currently displayed to fit bounds
+                    var bounds = [];
+                    layerGroup.eachLayer(function(layer){
+                        if(layer instanceof L.CircleMarker) bounds.push(layer.getLatLng());
+                    });
+                    if(bounds.length > 0) map.fitBounds(bounds);
                 }
             });
+
+            // Auto-refresh every 5 seconds (fetches new data)
+            setInterval(fetchData, 5000);
+            fetchData();
         </script>
     </body>
 </html>

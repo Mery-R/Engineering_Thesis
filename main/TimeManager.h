@@ -37,6 +37,7 @@ private:
     static uint32_t lastPeriodicCheck;
 
     static const uint64_t MIN_VALID_UNIX_MS;
+    static const uint64_t MAX_VALID_UNIX_MS;
 
     static uint64_t getNtpTimeMs(); // Get time from NTP
 };
