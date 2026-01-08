@@ -8,6 +8,11 @@
 #include <DallasTemperature.h>
 #include <esp_task_wdt.h>
 #include "esp_sleep.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "freertos/queue.h"
+#include "freertos/event_groups.h"
 
 // --- Modules ---
 #include "SdModule.h"
@@ -29,8 +34,8 @@ SET_TIME_BEFORE_STARTING_SKETCH_MS(2000); // Set time before starting sketch (ms
 // WiFi settings
 // {SSID, Password}
 std::vector<WiFiConfig> WIFI_CONFIG = {
+    {"sdgsdssd", "sd"},
     {"KTO-Rosomak", "12345678"},
-    {"Dom2", "xyz"},
     {"Hotspot", "..." }
 };
 
@@ -75,13 +80,22 @@ const char* MQTT_PASSWORD  = "8erz5sxd48lm797nr4ch";    // Password for ThingsBo
 // -----------------------------------------------------
 
 // WDT settings
-#define WDT_TIMEOUT 60                      // Time before WDT reset (seconds)
+#define WDT_TIMEOUT 120                      // Time before WDT reset (seconds)
 
 // Delays (volatile for dynamic update)
 volatile int Delay_MAIN = 15000;            // Main loop delay (ms) (can be changed via ThingsBoard)
-volatile int Delay_WIFI = 30000;            // WiFi loop delay (ms) (can be changed via ThingsBoard)
+volatile int Delay_WIFI = 300000;            // WiFi loop delay (ms) (can be changed via ThingsBoard)
 volatile int ATTR_REQUEST_INTERVAL = 300000;// Attributes request interval (ms) (can be changed via ThingsBoard)
 volatile int MQTT_KEEPALIVE_TIMEOUT = 2000; // MQTT keep-alive timeout (ms) (can be changed via ThingsBoard)
+
+// LED Brightness (0-255)
+volatile int LED_DUTY_WIFI = 10;
+volatile int LED_DUTY_GPS  = 80;
+volatile int LED_DUTY_SD   = 40;
+
+// PWM for LEDs
+#define PWM_FREQ 5000
+#define PWM_RES 8
 
 // Buffer settings (volatile for dynamic update)
 volatile int BUFFER_CAPACITY = 60;          // Buffer capacity
@@ -95,7 +109,14 @@ volatile bool REQUIRE_VALID_TIME = true;    // Time sync setting (can be changed
 // Sensor Enable Flags
 bool ENABLE_GPS = true;
 bool ENABLE_TEMP = true;
-bool ENABLE_CAN = false;    
+bool ENABLE_CAN = false;
+
+// Debug RAM Usage  
+bool DEBUG_RAM = false;
+
+// CPU Frequency
+int CPU_FREQ_HIGH = 240;
+int CPU_FREQ_LOW = 80;
 
 
 
@@ -217,6 +238,23 @@ void attributesCallback(const JsonObject &data) {
     }
 }
 
+// Helper to print memory stats
+void printMemoryStats() {
+    Serial.println("----- MEMORY STATS -----");
+    Serial.printf("[HEAP] Free: %d bytes, Min Free: %d bytes\n", esp_get_free_heap_size(), esp_get_minimum_free_heap_size());
+    
+    if (coordinatorTaskHandle) Serial.printf("[TASK] Coordinator: %d bytes free stack\n", uxTaskGetStackHighWaterMark(coordinatorTaskHandle));
+    if (wifiTaskHandle)        Serial.printf("[TASK] WiFi:        %d bytes free stack\n", uxTaskGetStackHighWaterMark(wifiTaskHandle));
+    if (dataSyncTaskHandle)    Serial.printf("[TASK] DataSync:    %d bytes free stack\n", uxTaskGetStackHighWaterMark(dataSyncTaskHandle));
+    if (gpsModuleTaskHandle)   Serial.printf("[TASK] GPS:         %d bytes free stack\n", uxTaskGetStackHighWaterMark(gpsModuleTaskHandle));
+    if (tempModuleTaskHandle)  Serial.printf("[TASK] Temp:        %d bytes free stack\n", uxTaskGetStackHighWaterMark(tempModuleTaskHandle));
+    if (canModuleTaskHandle)   Serial.printf("[TASK] CAN:         %d bytes free stack\n", uxTaskGetStackHighWaterMark(canModuleTaskHandle));
+    if (webServerTaskHandle)   Serial.printf("[TASK] WebServer:   %d bytes free stack\n", uxTaskGetStackHighWaterMark(webServerTaskHandle));
+    if (sleepTaskHandle)       Serial.printf("[TASK] Sleep:       %d bytes free stack\n", uxTaskGetStackHighWaterMark(sleepTaskHandle));
+    
+    Serial.println("------------------------");
+}
+
 // -----------------------------------------------------
 // ----------------------- TASKS -----------------------
 // -----------------------------------------------------
@@ -236,6 +274,10 @@ void CoordinatorTask(void* pvParameters) {
 
         // Print alive for debug
         Serial.println("[COORD] Wakeup");
+
+        if (DEBUG_RAM) {
+            printMemoryStats();
+        }
 
         // Trigger tasks via notifications (only enabled ones)
         if (ENABLE_GPS && gpsModuleTaskHandle) xTaskNotifyGive(gpsModuleTaskHandle);
@@ -289,7 +331,6 @@ void CoordinatorTask(void* pvParameters) {
         // Check if time is synchronized before storing data
         if (!TimeManager::isSynchronized() && REQUIRE_VALID_TIME) {
             Serial.println("[COORD] Waiting for time sync...");
-            if (wifiTaskHandle) xTaskNotifyGive(wifiTaskHandle);
             continue;
         } else {
             if (xQueueSend(dataQueue, &snapshot, 0) != pdTRUE) {
@@ -309,19 +350,28 @@ void TaskWiFi(void* pvParameters) {
     tbClient.setAttributesCallback(attributesCallback);
     
     for (;;) {
-        // Wait for notification or timeout
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(Delay_WIFI));
+        // Wait for notification or timeout, but feed WDT periodically
+        unsigned long startWait = millis();
+        while (millis() - startWait < (unsigned long)Delay_WIFI) {
+            esp_task_wdt_reset();
+             // Check every 10 seconds
+            if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(WDT_TIMEOUT/2)) > 0) {
+                break; // Force wake up
+            }
+        }
         esp_task_wdt_reset();
 
         if (WiFi.status() != WL_CONNECTED) {
             Serial.println("[WiFi] WiFi lost/disconnected. Attempting reconnect...");
-            esp_task_wdt_reset();  
+            esp_task_wdt_reset();
+            setCpuFrequencyMhz(CPU_FREQ_HIGH); // Boost for connection
             if (wifiManager.connectToBest()) {
                  // Clear any notifications received
                  ulTaskNotifyTake(pdTRUE, 0);
                  esp_task_wdt_reset();
             }
             else {
+                setCpuFrequencyMhz(CPU_FREQ_LOW); // Back to power save if failed
                 Serial.println("[WiFi] Failed to reconnect.");
             }
         }
@@ -336,8 +386,6 @@ void WiFiEventHandler(void* arg, esp_event_base_t base, int32_t id, void* data)
 
         // Station started
         case WIFI_EVENT_STA_START:
-            // Notify WiFi Task to handle connection (prevents double scan)
-            if (wifiTaskHandle) xTaskNotifyGive(wifiTaskHandle);
             break;
         
         // Station connected
@@ -346,9 +394,10 @@ void WiFiEventHandler(void* arg, esp_event_base_t base, int32_t id, void* data)
 
         // Station disconnected
         case WIFI_EVENT_STA_DISCONNECTED:
-            digitalWrite(LED_WiFi, LOW);
-            // Notify WiFi Task to handle reconnection
-            //if (wifiTaskHandle) xTaskNotifyGive(wifiTaskHandle);
+            // digitalWrite(LED_WiFi, LOW);
+            ledcWrite(LED_WiFi, 0);
+            
+            setCpuFrequencyMhz(CPU_FREQ_LOW); // Drop to 80MHz immediately on disconnect
             break;
 
         }
@@ -358,7 +407,10 @@ void WiFiEventHandler(void* arg, esp_event_base_t base, int32_t id, void* data)
     if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         auto* event = (ip_event_got_ip_t*)data;
         Serial.printf("[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
-        digitalWrite(LED_WiFi, HIGH);
+        // digitalWrite(LED_WiFi, HIGH);
+        ledcWrite(LED_WiFi, LED_DUTY_WIFI);
+
+        setCpuFrequencyMhz(CPU_FREQ_HIGH); // Boost to 240MHz when connected
 
         if (webServerTaskHandle) xTaskNotifyGive(webServerTaskHandle); // Notify WebServer Task
     }
@@ -401,7 +453,7 @@ void TaskGPS(void* pvParameters){
         
         unsigned long start = millis();
         bool hasFix = false;
-
+        gpsModule.wake();
         // Read GPS data for max TIMEOUT
         do {
             esp_task_wdt_reset(); // Feed the watchdog
@@ -415,7 +467,6 @@ void TaskGPS(void* pvParameters){
                 break; 
             }
             
-            // Short processor breath
             vTaskDelay(pdMS_TO_TICKS(10));
 
         } while (millis() - start < TIMEOUT);
@@ -435,15 +486,17 @@ void TaskGPS(void* pvParameters){
             
             data.ec &= ~ERR_GPS_NO_FIX;
             Serial.printf("[GPS] Fix acquired! Lat: %f, Lon: %f\n", data.lat, data.lon);
-            digitalWrite(LED_GPS, HIGH);
+            // digitalWrite(LED_GPS, HIGH);
+            ledcWrite(LED_GPS, LED_DUTY_GPS);
         } else {
             data.ec |= ERR_GPS_NO_FIX;
             Serial.printf("[GPS] Timeout: No fix within %lu ms.\n", TIMEOUT);
-            digitalWrite(LED_GPS, LOW);
+            // digitalWrite(LED_GPS, LOW);
+            ledcWrite(LED_GPS, 0);
         }
         
         xSemaphoreGive(dataSem);
-
+        gpsModule.sleep();
         // Notify coordinator that GPS finished
         xEventGroupSetBits(sensorEventGroup, EVENT_GPS_READY);
     }
@@ -557,7 +610,7 @@ void TaskDataSync(void* pvParameters) {
                     // Successful connection -> Send static attributes
                     tbClient.sendClientAttribute("ssid", WiFi.SSID().c_str());
                     tbClient.sendClientAttribute("ip", WiFi.localIP().toString().c_str());
-                }
+                } 
 
                 esp_task_wdt_reset();
             }
@@ -623,7 +676,8 @@ void TaskDataSync(void* pvParameters) {
 
             // Save to SD Card
             if (sdModule.ensureReady()) {
-                digitalWrite(LED_SD, HIGH);
+                // digitalWrite(LED_SD, HIGH);
+                ledcWrite(LED_SD, LED_DUTY_SD);
                 
                 // Always save to Archive
                 sdModule.logToArchive(batch, count);
@@ -632,8 +686,10 @@ void TaskDataSync(void* pvParameters) {
                 if (!sent) {
                     sdModule.logToPending(batch, count);
                 }
+                
             } else {
-                digitalWrite(LED_SD, LOW);
+                // digitalWrite(LED_SD, LOW);
+                ledcWrite(LED_SD, 0);
                 Serial.println("[SD] SD Error: Cannot save data.");
             }
         }
@@ -692,26 +748,27 @@ void TaskSleep(void* pvParameters) {
         // Wait for notification from ISR
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        Serial.println("[SLEEP] Button ISR detected. Checking debounce...");
+            // Only if you have a button connected
+            Serial.println("[SLEEP] Button ISR detected. Checking debounce...");
 
-        // Simple Debounce
-        // Wait and check if button is still pressed (LOW)
-        vTaskDelay(pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS));
-        
-        if (digitalRead(WAKE_BUTTON_PIN) == HIGH) {
-            Serial.println("[SLEEP] False alarm (noise).");
-            continue; // Go back to waiting
-        }
+            // Simple Debounce
+            // Wait and check if button is still pressed (LOW)
+            vTaskDelay(pdMS_TO_TICKS(BUTTON_DEBOUNCE_MS));
+            
+            if (digitalRead(WAKE_BUTTON_PIN) == HIGH) {
+                Serial.println("[SLEEP] False alarm (noise).");
+                continue; // Go back to waiting
+            }
 
-        Serial.println("[SLEEP] Button pressed. Waiting for release...");
-        
-        while (digitalRead(WAKE_BUTTON_PIN) == LOW) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
+            Serial.println("[SLEEP] Button pressed. Waiting for release...");
+            
+            while (digitalRead(WAKE_BUTTON_PIN) == LOW) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+            }
 
-        Serial.println("[SLEEP] Button released. Initiating sleep sequence...");
+            Serial.println("[SLEEP] Button released. Initiating sleep sequence...");
 
-        // if(ENABLE_GPS) gpsModule.sleep();
+        if(ENABLE_GPS) gpsModule.sleep();
         // if(ENABLE_CAN) canModule.sleep();
         // if(ENABLE_TEMP) tempSensor.stop();
 
@@ -728,8 +785,11 @@ void TaskSleep(void* pvParameters) {
         }
 
         // Enter Deep Sleep
-        // Wake up when button pin goes LOW again
-        esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_BUTTON_PIN, 0);
+        // Wake up when button pin goes LOW again (if you have a button connected)
+        // esp_sleep_enable_ext0_wakeup((gpio_num_t)WAKE_BUTTON_PIN, 0);
+        
+        // Wake up after 10 minutes
+        esp_sleep_enable_timer_wakeup(10ULL * 60 * 1000000);
         
         Serial.println("[SLEEP] Entering Deep Sleep. Goodbye!");
         Serial.flush(); // Ensure logs are printed before shutdown
@@ -743,14 +803,19 @@ void setup() {
     delay(100); 
     Serial.println("\n[BOOT] System Starting...");
 
+    // Set default CPU frequency to Low Power
+    setCpuFrequencyMhz(CPU_FREQ_LOW);
+
     // Watchdog
     initWatchdog(WDT_TIMEOUT);
     
     // GPIO
-    //pinMode(WAKE_BUTTON_PIN, INPUT_PULLUP);
-    pinMode(LED_WiFi, OUTPUT);
-    pinMode(LED_GPS, OUTPUT);
-    pinMode(LED_SD, OUTPUT);
+    //pinMode(WAKE_BUTTON_PIN, INPUT_PULLUP); //Optional (wake button)
+
+    // Configure PWM for LEDs
+    ledcAttach(LED_WiFi, PWM_FREQ, PWM_RES);
+    ledcAttach(LED_GPS, PWM_FREQ, PWM_RES);
+    ledcAttach(LED_SD, PWM_FREQ, PWM_RES);
 
     // Resources
     dataSem = xSemaphoreCreateMutex();
@@ -766,24 +831,19 @@ void setup() {
     // WiFi
     wifiManager.begin(); 
     xTaskCreate(TaskWiFi, "WiFi", 4096, NULL, 1, &wifiTaskHandle);
+    if (wifiTaskHandle) xTaskNotifyGive(wifiTaskHandle); // Force start WiFi scan immediately
 
     // Time
     TimeManager::begin(PPS_PIN);
 
     // SD
-    if (sdModule.ensureReady()){
-        digitalWrite(LED_SD, HIGH);
-        Serial.println("[SETUP] SD Card OK");
-    } else {
-        digitalWrite(LED_SD, LOW);
-        Serial.println("[SETUP] SD Card Failed");
-    }
+    if (sdModule.ensureReady()) ledcWrite(LED_SD, LED_DUTY_SD);
 
     // GPS
     if (ENABLE_GPS) {
         Serial.println("[SETUP] Enabling GPS...");
         gpsModule.begin();
-        xTaskCreate(TaskGPS, "GPS", 8192, NULL, 1, &gpsModuleTaskHandle);
+        xTaskCreate(TaskGPS, "GPS", 4096, NULL, 1, &gpsModuleTaskHandle);
         
         if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
              gpsModule.wake();
@@ -806,13 +866,13 @@ void setup() {
     }
 
     // Logic Tasks
-    xTaskCreate(CoordinatorTask, "SensorFusion", 8192, NULL, 2, &coordinatorTaskHandle);
-    xTaskCreate(TaskDataSync, "Telemetry", 16384, NULL, 1, &dataSyncTaskHandle);
+    xTaskCreate(CoordinatorTask, "SensorFusion", 4096, NULL, 2, &coordinatorTaskHandle);
+    xTaskCreate(TaskDataSync, "Telemetry", 8192, NULL, 1, &dataSyncTaskHandle);
     xTaskCreate(TaskWebServer, "HttpServer", 4096, NULL, 1, &webServerTaskHandle);
-    xTaskCreate(TaskSleep, "Sleep", 4096, NULL, 5, &sleepTaskHandle);
+    xTaskCreate(TaskSleep, "Sleep", 2048, NULL, 5, &sleepTaskHandle);
 
     // Interrupts
-    //attachInterrupt(digitalPinToInterrupt(WAKE_BUTTON_PIN), isrButton, FALLING);
+    //attachInterrupt(digitalPinToInterrupt(WAKE_BUTTON_PIN), isrButton, FALLING); //Optional (wake button)
     
     Serial.println("[SETUP] System Ready.");
     vTaskDelete(NULL);

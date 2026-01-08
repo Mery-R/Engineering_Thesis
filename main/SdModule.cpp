@@ -90,7 +90,6 @@ bool SdModule::logToPending(const SensorData* batch, int count) {
         sensorDataToTb(batch[i], obj);
         
 
-        
         if (serializeJson(doc, file) == 0) {
             Serial.println("[SD] Failed to write record to pending");
         }
@@ -232,57 +231,8 @@ bool SdModule::removeFirstRecords(int count) {
 }
 
 // -----------------------------------------------------
-// --------------- Private Methods ---------------------
-// -----------------------------------------------------
-
-String SdModule::generateArchiveFilename() {
-    if (TimeManager::isSynchronized()) {
-        time_t now = TimeManager::getTimestampMs() / 1000;
-        setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
-        tzset();
-
-        struct tm timeinfo;
-        localtime_r(&now, &timeinfo);
-        
-        // Year validity check
-        if (timeinfo.tm_year + 1900 < 2024) return "";
-
-        char buf[64];
-        snprintf(buf, sizeof(buf), "/LOG_%04d%02d%02d_%02d%02d%02d.jsonl",
-                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-        return String(buf);
-    }
-    return "";
-}
-
-void SdModule::rotateArchiveFile() {
-    String newName = generateArchiveFilename();
-    if (newName.length() > 0) {
-        _currentArchiveFilename = newName;
-        Serial.printf("[SD] New archive file: %s\n", _currentArchiveFilename.c_str());
-    }
-}
-
-void SdModule::checkArchiveSizeAndRotate() {
-    if (_currentArchiveFilename.length() == 0) {
-        rotateArchiveFile();
-        return;
-    }
-
-    if (!SD.exists(_currentArchiveFilename)) return;
-
-    File f = SD.open(_currentArchiveFilename, FILE_READ);
-    if (!f) return;
-    
-    size_t size = f.size();
-    f.close();
-
-    if (size >= MAX_FILE_SIZE) {
-        Serial.println("[SD] Archive file limit reached. Rotating.");
-        rotateArchiveFile();
-    }
-}
+// ----------------- ARCHIVE FILE ----------------------
+// -----------------------------------------------------    
 
 bool SdModule::logToArchive(const SensorData* batch, int count) {
     if (sdMutex) xSemaphoreTake(sdMutex, portMAX_DELAY);
@@ -382,3 +332,57 @@ String SdModule::getLatestArchiveFilename() {
 bool SdModule::isReady() const {
     return _initialized;
 }
+
+// -----------------------------------------------------
+// --------------- Private Methods ---------------------
+// -----------------------------------------------------
+
+String SdModule::generateArchiveFilename() {
+    if (TimeManager::isSynchronized()) {
+        time_t now = TimeManager::getTimestampMs() / 1000;
+        setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
+        tzset();
+
+        struct tm timeinfo;
+        localtime_r(&now, &timeinfo);
+        
+        // Year validity check
+        if (timeinfo.tm_year + 1900 < 2024) return "";
+
+        char buf[64];
+        snprintf(buf, sizeof(buf), "/LOG_%04d%02d%02d_%02d%02d%02d.jsonl",
+                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        return String(buf);
+    }
+    return "";
+}
+
+void SdModule::rotateArchiveFile() {
+    String newName = generateArchiveFilename();
+    if (newName.length() > 0) {
+        _currentArchiveFilename = newName;
+        Serial.printf("[SD] New archive file: %s\n", _currentArchiveFilename.c_str());
+    }
+}
+
+void SdModule::checkArchiveSizeAndRotate() {
+    if (_currentArchiveFilename.length() == 0) {
+        rotateArchiveFile();
+        return;
+    }
+
+    if (!SD.exists(_currentArchiveFilename)) return;
+
+    File f = SD.open(_currentArchiveFilename, FILE_READ);
+    if (!f) return;
+    
+    size_t size = f.size();
+    f.close();
+
+    if (size >= MAX_FILE_SIZE) {
+        Serial.println("[SD] Archive file limit reached. Rotating.");
+        rotateArchiveFile();
+    }
+}
+

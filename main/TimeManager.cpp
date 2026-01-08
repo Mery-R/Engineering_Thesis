@@ -14,7 +14,7 @@ const char* ntpServer1 = "pool.ntp.org";
 const char* ntpServer2 = "time.google.com";
 const char* ntpServer3 = "time.cloudflare.com";
 bool TimeManager::ntpEnabled = false;
-uint32_t TimeManager::lastPeriodicCheck = 0;
+
 
 // Minimum timestamp (ms) considered valid - smaller values are ignored
 const uint64_t TimeManager::MIN_VALID_UNIX_MS = 1763651027000ULL;

@@ -48,5 +48,5 @@ private:
     const unsigned long GPS_DATA_TIMEOUT_MS = 5000; 
     const bool DEBUG_RAW = false;
 
-    bool validateChecksum(); // Checksum helper
+
 };

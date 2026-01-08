@@ -14,26 +14,28 @@ void GpsModule::begin() {
     _gpsSerial.begin(_baudRate, SERIAL_8N1, _rxPin, _txPin);
     Serial.printf("Config: Baud=%ld, RX=%d, TX=%d ---> ", _baudRate, _rxPin, _txPin);
     _lastFixTime = millis();
+    // Włączenie EASY (Embedded Assist System)
+    // Zwiększa szansę na szybkiego fixa po wybudzeniu
+    _gpsSerial.println("$PAIR490,1*2A");
+    Serial.print("Easy enabled ---> ");
     Serial.println("Initialization finished");
 }
 
 void GpsModule::wake() {
     Serial.println("[GPS] WAKE");
-    // According to Quectel documentation: $PAIR002*38
+    // Wake system - $PAIR002*38
     _gpsSerial.println("$PAIR002*38");
     // Short delay for startup
-    delay(200); 
+    vTaskDelay(pdMS_TO_TICKS(200)); 
 }
 
 void GpsModule::sleep() {
     Serial.println("[GPS] SLEEP");
     // 1. Lock System Sleep - $PAIR382,1*2E
-    //    Dokumentacja str. 42: "CM4 will entry Standby if application not working."
     _gpsSerial.println("$PAIR382,1*2E");
-    delay(100);
+    vTaskDelay(pdMS_TO_TICKS(100));
     
     // 2. Power Off GNSS system - $PAIR003*39
-    //    Dokumentacja str. 22: "Powers off the GNSS system... CM4 will be set to the Standby mode."
     _gpsSerial.println("$PAIR003*39");
 }
 
@@ -46,6 +48,7 @@ bool GpsModule::process() {
 
     while (_gpsSerial.available() > 0) {
             char c = _gpsSerial.read();
+
             if (DEBUG_RAW) Serial.write(c);
 
             if (_gps.encode(c)) {
@@ -56,6 +59,7 @@ bool GpsModule::process() {
                     _lastFixTime = millis();
                     if (!_fixAcquired) {
                         Serial.println("[GPS] First FIX after wake/startup!");
+                        
                         _fixAcquired = true;
                     }
                 }
@@ -63,10 +67,7 @@ bool GpsModule::process() {
         }
         
         // Check data timeout (if module transmits anything)
-        if (millis() - _lastFixTime > (GPS_DATA_TIMEOUT_MS * 4) && _fixAcquired) {
-             // Warning only if we had a fix, and now total silence on the line
-             // Serial.println("[GPS][WARN] Long silence on RX port.");
-        }
+
     return encoded;
 }
 

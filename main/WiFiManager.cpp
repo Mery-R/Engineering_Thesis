@@ -15,9 +15,6 @@ void WiFiManager::begin() {
 
     Serial.println("[WiFi] Initialized");
 
-    // Register ESP32 events
-    esp_event_loop_create_default();
-
     esp_event_handler_instance_register(
         WIFI_EVENT,
         ESP_EVENT_ANY_ID,
@@ -46,7 +43,7 @@ void WiFiManager::startScan() {
         sn.ssid = WiFi.SSID(i);
         sn.rssi = WiFi.RSSI(i);
         _scanned.push_back(sn);
-        if (_debug) Serial.printf("  %s (%d dBm)\n", sn.ssid.c_str(), sn.rssi);
+
     }
 
     if (n == 0) Serial.println("[WiFi] No networks found");

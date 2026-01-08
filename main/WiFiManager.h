@@ -33,7 +33,7 @@ public:
 private:
     std::vector<WiFiConfig> _configs;
     std::vector<ScannedNetwork> _scanned;
-    int _debug = 0; // Debug flag (renamed from 'debug' to match style)
+
 
     const WiFiConfig* chooseBestAP(); // Selects the best AP from scanned list
 };

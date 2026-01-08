@@ -1,0 +1,297 @@
+{
+  "ruleChain": {
+    "name": "Root Rule Chain",
+    "type": "CORE",
+    "firstRuleNodeId": null,
+    "root": false,
+    "debugMode": false,
+    "configuration": null,
+    "additionalInfo": null
+  },
+  "metadata": {
+    "version": 66,
+    "firstNodeIndex": 5,
+    "nodes": [
+      {
+        "type": "org.thingsboard.rule.engine.telemetry.TbMsgAttributesNode",
+        "name": "Save Client Attributes",
+        "debugSettings": null,
+        "singletonMode": false,
+        "queueName": null,
+        "configurationVersion": 3,
+        "configuration": {
+          "processingSettings": {
+            "type": "ON_EVERY_MESSAGE"
+          },
+          "scope": "CLIENT_SCOPE",
+          "notifyDevice": false,
+          "sendAttributesUpdatedNotification": false,
+          "updateAttributesOnlyOnValueChange": true
+        },
+        "additionalInfo": {
+          "layoutX": 359,
+          "layoutY": 109
+        }
+      },
+      {
+        "type": "org.thingsboard.rule.engine.filter.TbMsgTypeSwitchNode",
+        "name": "Message Type Switch",
+        "debugSettings": {
+          "failuresEnabled": true,
+          "allEnabled": false,
+          "allEnabledUntil": 1767091618072
+        },
+        "singletonMode": false,
+        "queueName": null,
+        "configurationVersion": 0,
+        "configuration": {
+          "version": 0
+        },
+        "additionalInfo": {
+          "description": null,
+          "layoutX": 74,
+          "layoutY": 339
+        }
+      },
+      {
+        "type": "org.thingsboard.rule.engine.action.TbLogNode",
+        "name": "Log RPC from Device",
+        "debugSettings": null,
+        "singletonMode": false,
+        "queueName": null,
+        "configurationVersion": 0,
+        "configuration": {
+          "scriptLang": "TBEL",
+          "jsScript": "return '\\nIncoming message:\\n' + JSON.stringify(msg) + '\\nIncoming metadata:\\n' + JSON.stringify(metadata);",
+          "tbelScript": "return '\\nIncoming message:\\n' + JSON.stringify(msg) + '\\nIncoming metadata:\\n' + JSON.stringify(metadata);"
+        },
+        "additionalInfo": {
+          "layoutX": 304,
+          "layoutY": 574
+        }
+      },
+      {
+        "type": "org.thingsboard.rule.engine.action.TbLogNode",
+        "name": "Log Other",
+        "debugSettings": null,
+        "singletonMode": false,
+        "queueName": null,
+        "configurationVersion": 0,
+        "configuration": {
+          "scriptLang": "TBEL",
+          "jsScript": "return '\\nIncoming message:\\n' + JSON.stringify(msg) + '\\nIncoming metadata:\\n' + JSON.stringify(metadata);",
+          "tbelScript": "return '\\nIncoming message:\\n' + JSON.stringify(msg) + '\\nIncoming metadata:\\n' + JSON.stringify(metadata);"
+        },
+        "additionalInfo": {
+          "layoutX": 295,
+          "layoutY": 26
+        }
+      },
+      {
+        "type": "org.thingsboard.rule.engine.rpc.TbSendRPCRequestNode",
+        "name": "RPC Call Request",
+        "debugSettings": null,
+        "singletonMode": false,
+        "queueName": null,
+        "configurationVersion": 0,
+        "configuration": {
+          "timeoutInSeconds": 60
+        },
+        "additionalInfo": {
+          "layoutX": 42,
+          "layoutY": 501
+        }
+      },
+      {
+        "type": "org.thingsboard.rule.engine.profile.TbDeviceProfileNode",
+        "name": "Device Profile Node",
+        "debugSettings": {
+          "failuresEnabled": true,
+          "allEnabled": false,
+          "allEnabledUntil": 1767112198194
+        },
+        "singletonMode": false,
+        "queueName": null,
+        "configurationVersion": 1,
+        "configuration": {
+          "persistAlarmRulesState": false,
+          "fetchAlarmRulesStateOnStart": false
+        },
+        "additionalInfo": {
+          "description": "Process incoming messages from devices with the alarm rules defined in the device profile. Dispatch all incoming messages with \"Success\" relation type.",
+          "layoutX": 52,
+          "layoutY": 242
+        }
+      },
+      {
+        "type": "org.thingsboard.rule.engine.telemetry.TbMsgTimeseriesNode",
+        "name": "JSON",
+        "debugSettings": {
+          "failuresEnabled": true,
+          "allEnabled": false,
+          "allEnabledUntil": 1767091618072
+        },
+        "singletonMode": false,
+        "queueName": null,
+        "configurationVersion": 1,
+        "configuration": {
+          "processingSettings": {
+            "type": "ON_EVERY_MESSAGE"
+          },
+          "defaultTTL": 0,
+          "useServerTs": false
+        },
+        "additionalInfo": {
+          "description": "",
+          "layoutX": 476,
+          "layoutY": 336
+        }
+      },
+      {
+        "type": "org.thingsboard.rule.engine.transform.TbTransformMsgNode",
+        "name": "Filtr GPS",
+        "debugSettings": {
+          "failuresEnabled": true,
+          "allEnabled": false,
+          "allEnabledUntil": 1767091618072
+        },
+        "singletonMode": false,
+        "queueName": null,
+        "configurationVersion": 0,
+        "configuration": {
+          "scriptLang": "JS",
+          "jsScript": "// Sprawdź, czy współrzędne istnieją i czy są równe 0\r\nif (typeof msg.lat !== 'undefined' && typeof msg.lon !== 'undefined') {\r\n    // Uwaga: Porównujemy z 0. Wartości z ESP32 przychodzą jako liczby.\r\n    // Jeśli lat i lon to dokładnie 0 (brak fixa), usuwamy je z obiektu.\r\n    if (msg.lat === 0 && msg.lon === 0) {\r\n        delete msg.lat;\r\n        delete msg.lon;\r\n        delete msg.vel;\r\n        delete msg.alt;\r\n    }\r\n}\r\n\r\nreturn {msg: msg, metadata: metadata, msgType: msgType};",
+          "tbelScript": "// Sprawdź, czy współrzędne istnieją i czy są równe 0\r\nif (typeof msg.lat !== 'undefined' && typeof msg.lon !== 'undefined') {\r\n    // Uwaga: Porównujemy z 0. Wartości z ESP32 przychodzą jako liczby.\r\n    // Jeśli lat i lon to dokładnie 0 (brak fixa), usuwamy je z obiektu.\r\n    if (msg.lat === 0 && msg.lon === 0) {\r\n        delete msg.lat;\r\n        delete msg.lon;\r\n        // Opcjonalnie usuń też inne dane zależne od GPS, jeśli są śmieciowe:\r\n        // delete msg.speed;\r\n        // delete msg.elevation;\r\n    }\r\n}\r\n\r\nreturn {msg: msg, metadata: metadata, msgType: msgType};"
+        },
+        "additionalInfo": {
+          "description": "",
+          "layoutX": 472,
+          "layoutY": 179
+        }
+      },
+      {
+        "type": "org.thingsboard.rule.engine.transform.TbTransformMsgNode",
+        "name": "Add status",
+        "debugSettings": {
+          "failuresEnabled": true,
+          "allEnabled": false,
+          "allEnabledUntil": 1767091618072
+        },
+        "singletonMode": false,
+        "queueName": null,
+        "configurationVersion": 0,
+        "configuration": {
+          "scriptLang": "JS",
+          "jsScript": "// --- CZĘŚĆ 1: Obsługa błędów (Error Code) ---\r\nvar code = msg.ec || 0;\r\nvar statusList = [];\r\n\r\nif (code === 0) {\r\n    msg.status_text = \"System OK\";\r\n} else {\r\n    // Logika bitowa zgodna z SensorData.h\r\n    if ((code & 1) > 0) statusList.push(\"Brak Fixa\");\r\n    if ((code & 2) > 0) statusList.push(\"Awaria Termometru\");\r\n    if ((code & 4) > 0) statusList.push(\"Awaria SD\");\r\n    if ((code & 8) > 0) statusList.push(\"Błąd ThingsBoard\");\r\n    \r\n    msg.status_text = statusList.join(\" + \");\r\n}\r\n\r\n// --- CZĘŚĆ 2: Obsługa źródła czasu (Time Source) ---\r\nvar src = msg.ts_source;\r\nvar srcStr = \"Nieznane\";\r\n\r\nif (src === 0) {\r\n    srcStr = \"Lokalny (Timer)\";\r\n} else if (src === 1) {\r\n    srcStr = \"WiFi (NTP)\";\r\n} else if (src === 2) {\r\n    srcStr = \"GPS\";\r\n}\r\n\r\nmsg.ts_source_str = srcStr;\r\n\r\n// --- CZĘŚĆ 3: Formatowanie daty z metadanych z korektą strefy czasowej ---\r\nif (metadata.ts) {\r\n    var ts = parseInt(metadata.ts);\r\n    \r\n    // KONFIGURACJA: Przesunięcie czasowe (Polska Zima = 1h, Lato = 2h)\r\n    var offsetHours = 1; \r\n    \r\n    // Dodajemy przesunięcie w milisekundach (godziny * 60 min * 60 sek * 1000 ms)\r\n    var localTs = ts + (offsetHours * 60 * 60 * 1000);\r\n    \r\n    var date = new Date(localTs);\r\n    \r\n    // Teraz toISOString() zwróci czas \"przesunięty\", czyli zgodny z Twoim zegarkiem\r\n    msg.ts_formatted = date.toISOString().replace('T', ' ').substring(0, 19);\r\n}\r\n\r\n// --- FINALIZACJA ---\r\nreturn {msg: msg, metadata: metadata, msgType: msgType};",
+          "tbelScript": "return {msg: msg, metadata: metadata, msgType: msgType};"
+        },
+        "additionalInfo": {
+          "description": "",
+          "layoutX": 473,
+          "layoutY": 260
+        }
+      },
+      {
+        "type": "org.thingsboard.rule.engine.telemetry.TbMsgAttributesNode",
+        "name": "Save attributes",
+        "debugSettings": {
+          "failuresEnabled": true,
+          "allEnabled": false,
+          "allEnabledUntil": 1766699845319
+        },
+        "singletonMode": false,
+        "queueName": null,
+        "configurationVersion": 3,
+        "configuration": {
+          "processingSettings": {
+            "type": "ON_EVERY_MESSAGE"
+          },
+          "scope": "CLIENT_SCOPE",
+          "notifyDevice": false,
+          "sendAttributesUpdatedNotification": false,
+          "updateAttributesOnlyOnValueChange": false
+        },
+        "additionalInfo": {
+          "description": "",
+          "layoutX": 473,
+          "layoutY": 492
+        }
+      },
+      {
+        "type": "org.thingsboard.rule.engine.transform.TbTransformMsgNode",
+        "name": "Change Telemetry to Attributes",
+        "debugSettings": {
+          "failuresEnabled": true,
+          "allEnabled": false,
+          "allEnabledUntil": 1767092425335
+        },
+        "singletonMode": false,
+        "queueName": null,
+        "configurationVersion": 0,
+        "configuration": {
+          "scriptLang": "JS",
+          "jsScript": "// Tworzymy nowy obiekt tylko dla atrybutów\r\nvar newMsg = {};\r\n\r\n// Sprawdzamy, czy w telemetrii przyszły nasze kluczowe dane\r\n// I przepisujemy je do nowej wiadomości\r\nif (msg.ec !== undefined) {\r\n    newMsg.ec = msg.ec;\r\n}\r\nif (msg.ts_source !== undefined) {\r\n    newMsg.ts_source = msg.ts_source;\r\n}\r\n\r\n// Jeśli w wiadomości nie było ani error_code ani time_source, przerywamy\r\nif (Object.keys(newMsg).length === 0) {\r\n    return null;\r\n}\r\n\r\n// Zmieniamy typ wiadomości na \"Atrybuty\" i zwracamy wynik\r\nreturn {\r\n    msg: newMsg,\r\n    metadata: metadata,\r\n    msgType: 'POST_ATTRIBUTES_REQUEST'\r\n};",
+          "tbelScript": "// Tworzymy nowy obiekt tylko dla atrybutów\r\nvar newMsg = {};\r\n\r\n// Sprawdzamy, czy w telemetrii przyszły nasze kluczowe dane\r\n// I przepisujemy je do nowej wiadomości\r\nif (msg.error_code !== undefined) {\r\n    newMsg.error_code = msg.error_code;\r\n}\r\nif (msg.time_source !== undefined) {\r\n    newMsg.time_source = msg.time_source;\r\n}\r\n\r\n// Jeśli w wiadomości nie było ani error_code ani time_source, przerywamy\r\nif (Object.keys(newMsg).length === 0) {\r\n    return null;\r\n}\r\n\r\n// Zmieniamy typ wiadomości na \"Atrybuty\" i zwracamy wynik\r\nreturn {\r\n    msg: newMsg,\r\n    metadata: metadata,\r\n    msgType: 'POST_ATTRIBUTES_REQUEST'\r\n};"
+        },
+        "additionalInfo": {
+          "description": "",
+          "layoutX": 473,
+          "layoutY": 413
+        }
+      }
+    ],
+    "connections": [
+      {
+        "fromIndex": 1,
+        "toIndex": 0,
+        "type": "Post attributes"
+      },
+      {
+        "fromIndex": 1,
+        "toIndex": 2,
+        "type": "RPC Request from Device"
+      },
+      {
+        "fromIndex": 1,
+        "toIndex": 3,
+        "type": "Other"
+      },
+      {
+        "fromIndex": 1,
+        "toIndex": 4,
+        "type": "RPC Request to Device"
+      },
+      {
+        "fromIndex": 1,
+        "toIndex": 7,
+        "type": "Post telemetry"
+      },
+      {
+        "fromIndex": 5,
+        "toIndex": 1,
+        "type": "Success"
+      },
+      {
+        "fromIndex": 6,
+        "toIndex": 10,
+        "type": "Success"
+      },
+      {
+        "fromIndex": 7,
+        "toIndex": 8,
+        "type": "Success"
+      },
+      {
+        "fromIndex": 8,
+        "toIndex": 6,
+        "type": "Success"
+      },
+      {
+        "fromIndex": 10,
+        "toIndex": 9,
+        "type": "Success"
+      }
+    ],
+    "ruleChainConnections": null
+  }
+}
