@@ -61,14 +61,14 @@
                 "label": "{i18n:widgets.maps.layer.satellite}",
                 "provider": "google",
                 "layerType": "satellite",
-                "apiKey": "AIzaSyDoEx2kaGz3PxwbI9T7ccTSg5xjdw8Nw8Q",
+                "apiKey": "",
                 "referenceLayer": null
               },
               {
                 "label": "{i18n:widgets.maps.layer.hybrid}",
                 "provider": "google",
                 "layerType": "hybrid",
-                "apiKey": "AIzaSyDoEx2kaGz3PxwbI9T7ccTSg5xjdw8Nw8Q",
+                "apiKey": "",
                 "referenceLayer": "openstreetmap_hybrid"
               }
             ],
