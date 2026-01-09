@@ -75,6 +75,11 @@ bool GpsModule::hasFix() {
     // We consider FIX valid if library says isValid AND data is fresh (e.g. < 5 sec)
     // TinyGPSPlus location.age() returns age in ms since last update
     if (!_gps.location.isValid()) return false;
+    
+    // Also require fresh speed data to ensure we processed the full NMEA set (GGA + RMC)
+    // This prevents "stuck" speed values from previous cycles.
+    if (_gps.speed.age() > 5000) return false;
+
     return (_gps.location.age() < 5000);
 }
 

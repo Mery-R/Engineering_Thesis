@@ -109,7 +109,7 @@ volatile bool REQUIRE_VALID_TIME = true;    // Time sync setting (can be changed
 // Sensor Enable Flags
 bool ENABLE_GPS = true;
 bool ENABLE_TEMP = true;
-bool ENABLE_CAN = false;
+bool ENABLE_CAN = true;
 
 // Debug RAM Usage  
 bool DEBUG_RAM = false;
@@ -546,43 +546,51 @@ void TaskTemp(void* pvParameters) {
     }
 }
 
-// --- TASK: CAN ---
 void TaskCAN(void* pvParameters) {
-    // Add to WDT
     esp_task_wdt_add(NULL);
-
     twai_message_t msg;
 
     for (;;) {
-        // Reset WDT
-        esp_task_wdt_reset();
+        // Wait for notification from Coordinator
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        // Get message
-        if (canModule.getMessage(msg)) {
-            
-            // Read vehicle speed (msg, id, startBit, length, isBigEndian, factor)
-            float vehicle_speed = canModule.readSignal(msg, 0x123, 0, 2, true, 0.1f);
-            
-            // Read engine speed (msg, id, startBit, length, isBigEndian, factor)
-            //float engine_speed = canModule.readSignal(msg, 0x123, 2, 2, true, 0.1f);
-            
-            // If valid speed
-            if (vehicle_speed >= 0) {
-                
-                // Write data
-                xSemaphoreTake(dataSem, portMAX_DELAY);
-                data.can_vel = vehicle_speed;
-                data.lcr_ts = TimeManager::getTimestampMs();
-                xSemaphoreGive(dataSem);
+        unsigned long start = millis();
+        bool received = false;
+        
+        // Loop for TIMEOUT to find the specific CAN message
+        while (millis() - start < TIMEOUT) {
+            esp_task_wdt_reset();
 
-                // Signal to Coordinator
-                xEventGroupSetBits(sensorEventGroup, EVENT_CAN_READY);
+            if (canModule.getMessage(msg)) {
+
+                // Check for Renault Megane 3 Speed ID (0x354)
+                if (msg.identifier == 0x354) {
+
+                    // Read vehicle speed (msg, id, startBit, length, isBigEndian, factor)
+                    float vehicle_speed = canModule.readSignal(msg, 0x354, 0, 16, true, 0.01f);
+
+                    if (vehicle_speed >= 0) {
+                        Serial.printf("[CAN] Speed CAN: %.2f km/h\n", vehicle_speed);
+                        
+                        xSemaphoreTake(dataSem, portMAX_DELAY);
+                        data.can_vel = vehicle_speed;
+                        data.lcr_ts = TimeManager::getTimestampMs();
+                        xSemaphoreGive(dataSem);
+
+                        received = true;
+                        break;
+                    }
+                }
+            } 
+            else {
+                // Short yield if no message available
+                vTaskDelay(pdMS_TO_TICKS(1)); 
             }
-        } 
-        else {
-            // No message - short pause
-            vTaskDelay(pdMS_TO_TICKS(10));
         }
+
+        if (received) {
+             xEventGroupSetBits(sensorEventGroup, EVENT_CAN_READY);
+         }
     }
 }
 
