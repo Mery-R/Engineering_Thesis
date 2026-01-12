@@ -26,14 +26,14 @@ Ceny są szacunkowe na podstawie wybranych podzespołów (stan na 11.2025).
 
 ## 2. Schemat Połączeń (Pinout)
 
-### A. Układ Zasilania (UPS - Suma logiczna)
+###  Układ Zasilania (UPS - Suma logiczna)
 
 1. **Wejście 12V (Auto):** Podłączone do wejścia przetwornicy Step-Down.
 2. **Wejście USB-C:** Podłączenie po przez ładowarkę sieciową.
 3. **Wybór Zasilania:** Akumulator powinien być ładowany tylko przez jedno wejście.(To znaczy USB-C lub OBD2)
 4. **Masa (GND):** Wszystkie masy połączone razem.
 
-### B. Peryferia (GPIO ESP32)
+### Peryferia (GPIO ESP32)
 
 | Moduł             | Pin Modułu     | Pin ESP32     | Uwagi                           |
 | :---------------- | :------------- | :------------ | :------------------------------ |
