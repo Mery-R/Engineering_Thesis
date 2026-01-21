@@ -169,7 +169,7 @@ bool SdModule::removeFirstRecords(int count) {
 
     File sourceFile = SD.open(_pendingFilename, FILE_READ);
     if (!sourceFile) {
-        Serial.println("[SD] Failed to open pending for reading (remove ops)");
+        Serial.println("[SD] Failed to open pending for reading");
         if (sdMutex) xSemaphoreGive(sdMutex);
         return false;
     }

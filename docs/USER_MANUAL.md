@@ -5,12 +5,19 @@ Niniejszy dokument opisuje sposób codziennego użytkowania urządzenia lokaliza
 ---
 
 ## Spis treści
-1. [Uruchomienie i zasilanie](#1-uruchomienie-i-zasilanie)
-2. [Sygnalizacja LED](#2-sygnalizacja-led-co-oznaczają-diody)
-3. [Przełącznik zasilania](#3-przełącznik-zasilania)
-4. [Panel internetowy](#4-obsługa-panelu-online-thingsboard)
-5. [Tryb offline](#5-praca-w-trybie-offline-brak-zasięgu)
-6. [Rozwiązywanie problemów](#6-rozwiązywanie-problemów)
+
+- [Instrukcja Użytkownika Systemu Lokalizacji Pojazdu](#instrukcja-użytkownika-systemu-lokalizacji-pojazdu)
+  - [Spis treści](#spis-treści)
+  - [1. Uruchomienie i Zasilanie](#1-uruchomienie-i-zasilanie)
+    - [Zasilanie awaryjne (UPS)](#zasilanie-awaryjne-ups)
+  - [2. Sygnalizacja LED (Co oznaczają diody?)](#2-sygnalizacja-led-co-oznaczają-diody)
+  - [3. Przełącznik zasilania](#3-przełącznik-zasilania)
+  - [4. Obsługa Panelu Online (ThingsBoard)](#4-obsługa-panelu-online-thingsboard)
+    - [Widok Mapy (Home / Map)](#widok-mapy-home--map)
+    - [Wykresy i Parametry (Charts)](#wykresy-i-parametry-charts)
+    - [Ustawienia (Settings)](#ustawienia-settings)
+  - [5. Praca w trybie Offline](#5-praca-w-trybie-offline)
+  - [6. Rozwiązywanie problemów](#6-rozwiązywanie-problemów)
 
 ---
 
@@ -24,7 +31,7 @@ Urządzenie jest zaprojektowane jako **bezobsługowe**.
     * **Stacjonarnie:** Do dowolnej ładowarki USB-C (np. od telefonu).
     * **Akumulatorowo:** Włóż akumulator do urządzenia.
     > **Uwaga:** Nie wolno podłączać jednocześnie USB-C oraz portu OBD2. Grozi to uszkodzeniem urządzenia.
-3.  **Start:** Urządzenie uruchomi się włączeniu przełącznika zasilania.
+3.  **Start:** Urządzenie uruchomi się po włączeniu przełącznika zasilania.
 
 ### Zasilanie awaryjne (UPS)
 Urządzenie posiada wbudowany akumulator. Po wyłączeniu zapłonu w samochodzie, lokalizator będzie kontynuował pracę przez pewien czas (zależny od poziomu naładowania).
@@ -35,14 +42,14 @@ Urządzenie posiada wbudowany akumulator. Po wyłączeniu zapłonu w samochodzie
 
 Na obudowie znajdują się trzy diody informujące o aktualnym stanie urządzenia.
 
-| Dioda (Kolor) | Stan | Oznaczenie | Co robić? |
-| :--- | :--- | :--- | :--- |
-| **🔵 WiFi** (Niebieska) | **Świeci** | **Połączono (Online)** | System działa poprawnie, dane są wysyłane na żywo. |
-| | Zgaszona | Brak sieci (Offline) | To normalne w trasie. Dane zapisują się na karcie SD. |
-| **🟢 GPS** (Zielona) | **Świeci** | **Pozycja ustalona** | Lokalizacja jest precyzyjna. |
-| | Zgaszona | Szukanie satelitów | Poczekaj chwilę. W garażach podziemnych /tunelach brak sygnału jest normalny. |
-| **🔴 SD** (Czerwona) | **Świeci** | **Karta OK** | Wszystko w porządku, system plików działa. |
-| | Zgaszona | **Błąd Karty!** | Wyjmij i włóż kartę SD ponownie. Jeśli nie pomaga, wymień kartę. |
+| Dioda (Kolor)          | Stan       | Oznaczenie             | Co robić?                                                                     |
+| :--------------------- | :--------- | :--------------------- | :---------------------------------------------------------------------------- |
+| **🔵 WiFi** (Niebieska) | **Świeci** | **Połączono (Online)** | System działa poprawnie, dane są wysyłane na żywo.                            |
+|                        | Zgaszona   | Brak sieci (Offline)   | To normalne w trasie. Dane zapisują się na karcie SD.                         |
+| **🟢 GPS** (Zielona)    | **Świeci** | **Pozycja ustalona**   | Lokalizacja jest precyzyjna.                                                  |
+|                        | Zgaszona   | Szukanie satelitów     | Poczekaj chwilę. W garażach podziemnych /tunelach brak sygnału jest normalny. |
+| **🔴 SD** (Czerwona)    | **Świeci** | **Karta OK**           | Wszystko w porządku, system plików działa.                                    |
+|                        | Zgaszona   | Błąd Karty!            | Wyjmij i włóż kartę SD ponownie. Jeśli nie pomaga, wymień kartę.              |
 
 ---
 
@@ -85,7 +92,7 @@ W tej zakładce możesz zdalnie zmieniać parametry pracy urządzenia bez koniec
 
 ---
 
-## 5. Praca w trybie Offline (Brak zasięgu)
+## 5. Praca w trybie Offline
 
 System jest odporny na zaniki zasięgu WiFi.
 1.  Gdy dioda **WiFi (Niebieska)** zgaśnie, urządzenie przechodzi w tryb rejestratora.
